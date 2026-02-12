@@ -42,16 +42,20 @@
     overflow-y: auto; white-space: pre-wrap; border: 1px solid #0f3460;
   }
   .result-panel {
-    background: #16213e; border-radius: 6px; padding: 12px; margin-bottom: 12px;
+    background: #16213e; border-radius: 6px; padding: 10px 14px; margin-bottom: 12px;
     border: 1px solid #0f3460; display: none;
   }
-  .result-panel h3 { margin-bottom: 8px; }
-  .result-panel .rv { font-size: 1.4em; color: #7ee787; }
-  .result-panel .rv-unc { font-size: 0.9em; color: #8899aa; }
-  .result-panel .stats { font-size: 0.82em; color: #a0c4ff; margin-top: 6px; }
-  .param-table { width: 100%; font-size: 0.78em; border-collapse: collapse; margin-top: 8px; }
-  .param-table th, .param-table td { padding: 3px 6px; text-align: left; border-bottom: 1px solid #0f3460; }
-  .param-table th { color: #e94560; }
+  .result-row { display: flex; align-items: baseline; gap: 16px; flex-wrap: wrap; }
+  .result-rv { font-size: 1.3em; color: #7ee787; white-space: nowrap; }
+  .result-rv .unc { font-size: 0.7em; color: #8899aa; }
+  .result-stats { font-size: 0.82em; color: #a0c4ff; display: flex; gap: 12px; flex-wrap: wrap; }
+  .result-stats span { white-space: nowrap; }
+  .param-details { margin-top: 6px; }
+  .param-details summary { font-size: 0.78em; color: #e94560; cursor: pointer; user-select: none; }
+  .param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 2px 12px; font-size: 0.76em; margin-top: 4px; }
+  .param-grid .pg-item { display: flex; justify-content: space-between; border-bottom: 1px solid #0f346040; padding: 1px 0; }
+  .param-grid .pg-key { color: #8899aa; }
+  .param-grid .pg-val { color: #e0e0e0; }
   .x-toggle { display: flex; gap: 4px; margin-bottom: 8px; }
   .x-toggle button { width: auto; padding: 4px 12px; font-size: 0.78em; background: #0f3460; }
   .x-toggle button.active { background: #e94560; }
@@ -173,14 +177,14 @@
 
   <div class="main">
     <div id="result-panel" class="result-panel">
-      <h3>Result</h3>
-      <div class="rv" id="rv-display"></div>
-      <div class="rv-unc" id="rv-unc-display"></div>
-      <div class="stats" id="stats-display"></div>
-      <table class="param-table" id="param-table">
-        <thead><tr><th>Parameter</th><th>Value</th><th>Uncertainty</th></tr></thead>
-        <tbody></tbody>
-      </table>
+      <div class="result-row">
+        <div class="result-rv" id="rv-display"></div>
+        <div class="result-stats" id="stats-display"></div>
+      </div>
+      <details class="param-details">
+        <summary>Fitted parameters</summary>
+        <div class="param-grid" id="param-grid"></div>
+      </details>
     </div>
 
     <div class="x-toggle">

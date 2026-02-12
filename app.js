@@ -537,21 +537,30 @@ function displayResults(fitData) {
     const prms = fitData.prms ?? 0;
     const berv = fitData.berv ?? 0;
 
-    document.getElementById('rv-display').textContent =
-        `RV = ${rv.toFixed(2)} m/s`;
-    document.getElementById('rv-unc-display').textContent =
-        `+/- ${e_rv.toFixed(2)} m/s`;
-    document.getElementById('stats-display').textContent =
-        `%rms = ${prms.toFixed(4)}% | BERV = ${berv.toFixed(3)} km/s | ${fitData.dateobs}`;
+    document.getElementById('rv-display').innerHTML =
+        `RV = ${rv.toFixed(2)} <span class="unc">+/- ${e_rv.toFixed(2)} m/s</span>`;
 
-    // parameter table
-    const tbody = document.querySelector('#param-table tbody');
-    tbody.innerHTML = '';
+    const stats = document.getElementById('stats-display');
+    stats.innerHTML = [
+        `<span>rms ${prms.toFixed(3)}%</span>`,
+        `<span>BERV ${berv.toFixed(3)} km/s</span>`,
+        `<span>${fitData.dateobs}</span>`,
+    ].join('');
+
+    // compact parameter grid - skip fixed/nan params
+    const grid = document.getElementById('param-grid');
+    grid.innerHTML = '';
     if (fitData.params) {
+        // friendly names for tuple keys
+        const label = (k) => k.replace(/[()' ]/g, '').replace(/,/g, '.');
+
         for (const [key, val] of Object.entries(fitData.params)) {
-            const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${key}</td><td>${val.value != null ? val.value.toFixed(6) : '-'}</td><td>${val.unc != null ? val.unc.toFixed(6) : '-'}</td>`;
-            tbody.appendChild(tr);
+            if (val.value == null) continue;
+            const unc = val.unc != null ? ` <span style="color:#556">\u00b1 ${val.unc.toPrecision(3)}</span>` : '';
+            const div = document.createElement('div');
+            div.className = 'pg-item';
+            div.innerHTML = `<span class="pg-key">${label(key)}</span><span class="pg-val">${val.value.toPrecision(6)}${unc}</span>`;
+            grid.appendChild(div);
         }
     }
 }
