@@ -172,6 +172,7 @@ def setup_model(obs_path, order, tpl_path=None, atmos_dir='/home/pyodide/atmos',
         '_err_obs': err_obs,
         '_flag_obs': flag_obs,
         '_parguess_wave': par.wave[:],
+        '_has_template': tpl_path is not None,
     }
 
 
@@ -196,7 +197,7 @@ def fit_order(setup_result, kapsig=(0, 3), deg_norm=3, deg_wave=3,
     flag_obs = setup_result['_flag_obs'].copy()
     parguess_wave = setup_result['_parguess_wave']
 
-    if rv_guess is not None:
+    if rv_guess is not None and setup_result.get('_has_template', False):
         par.rv = rv_guess
 
     # --- weighting ---
