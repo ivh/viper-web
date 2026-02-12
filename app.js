@@ -336,18 +336,21 @@ json.dumps(fit_result)
             return;
         }
 
-        log(`Fit converged: RV = ${fitData.rv.toFixed(2)} +/- ${fitData.e_rv.toFixed(2)} m/s`);
-        log(`  %rms = ${fitData.prms.toFixed(4)}%`);
+        const rv = fitData.rv ?? 0;
+        const e_rv = fitData.e_rv ?? 0;
+        const prms = fitData.prms ?? 0;
 
-        // display results
-        displayResults(fitData);
-
-        // update plots
+        // update plots first
         plotSpectrum(fitData, true);
         plotResiduals(fitData, true);
         plotIP(fitData);
 
-        setStatus(`Fit complete. RV = ${fitData.rv.toFixed(2)} +/- ${fitData.e_rv.toFixed(2)} m/s`);
+        // display results
+        displayResults(fitData);
+
+        log(`Fit converged: RV = ${rv.toFixed(2)} +/- ${e_rv.toFixed(2)} m/s`);
+        log(`  %rms = ${prms.toFixed(4)}%`);
+        setStatus(`Fit complete. RV = ${rv.toFixed(2)} +/- ${e_rv.toFixed(2)} m/s`);
 
         document.getElementById('btn-export-json').disabled = false;
         document.getElementById('btn-export-csv').disabled = false;
@@ -529,12 +532,17 @@ function displayResults(fitData) {
     const panel = document.getElementById('result-panel');
     panel.style.display = 'block';
 
+    const rv = fitData.rv ?? 0;
+    const e_rv = fitData.e_rv ?? 0;
+    const prms = fitData.prms ?? 0;
+    const berv = fitData.berv ?? 0;
+
     document.getElementById('rv-display').textContent =
-        `RV = ${fitData.rv.toFixed(2)} m/s`;
+        `RV = ${rv.toFixed(2)} m/s`;
     document.getElementById('rv-unc-display').textContent =
-        `+/- ${fitData.e_rv.toFixed(2)} m/s`;
+        `+/- ${e_rv.toFixed(2)} m/s`;
     document.getElementById('stats-display').textContent =
-        `%rms = ${fitData.prms.toFixed(4)}% | BERV = ${fitData.berv.toFixed(3)} km/s | ${fitData.dateobs}`;
+        `%rms = ${prms.toFixed(4)}% | BERV = ${berv.toFixed(3)} km/s | ${fitData.dateobs}`;
 
     // parameter table
     const tbody = document.querySelector('#param-table tbody');
@@ -542,7 +550,7 @@ function displayResults(fitData) {
     if (fitData.params) {
         for (const [key, val] of Object.entries(fitData.params)) {
             const tr = document.createElement('tr');
-            tr.innerHTML = `<td>${key}</td><td>${val.value.toFixed(6)}</td><td>${val.unc !== null ? val.unc.toFixed(6) : '-'}</td>`;
+            tr.innerHTML = `<td>${key}</td><td>${val.value != null ? val.value.toFixed(6) : '-'}</td><td>${val.unc != null ? val.unc.toFixed(6) : '-'}</td>`;
             tbody.appendChild(tr);
         }
     }
