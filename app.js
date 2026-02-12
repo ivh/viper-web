@@ -126,25 +126,29 @@ async function loadAtmosphere(band) {
     let cache;
     try { cache = await caches.open('viper-atmos-v1'); } catch(e) {}
 
-    const url = `atmos/stdAtmos_${band}.fits`;
+    const localUrl = `atmos/stdAtmos_${band}.fits`;
+    const remoteUrl = `https://raw.githubusercontent.com/mzechmeister/viper/master/lib/atmos/stdAtmos_${band}.fits`;
     let resp;
 
     if (cache) {
-        resp = await cache.match(url);
+        resp = await cache.match(localUrl);
         if (resp) {
             log(`  Loaded ${band} from browser cache.`);
         }
     }
 
     if (!resp) {
-        resp = await fetch(url);
+        resp = await fetch(localUrl);
         if (!resp.ok) {
-            log(`  Warning: failed to fetch ${url} (${resp.status})`);
+            log(`  Local not found, fetching from viper repo...`);
+            resp = await fetch(remoteUrl);
+        }
+        if (!resp.ok) {
+            log(`  Warning: failed to fetch atmosphere ${band} (${resp.status})`);
             return;
         }
-        // cache for next time
         if (cache) {
-            try { await cache.put(url, resp.clone()); } catch(e) {}
+            try { await cache.put(localUrl, resp.clone()); } catch(e) {}
         }
     }
 
