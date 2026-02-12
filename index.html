@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VIPER-Web: Telluric Spectrum Fitter</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; }
+  .header { background: #16213e; padding: 12px 24px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid #0f3460; }
+  .header h1 { font-size: 1.3em; color: #e94560; }
+  .header .subtitle { font-size: 0.85em; color: #8899aa; }
+  #status-bar { padding: 6px 24px; background: #0f3460; font-size: 0.85em; color: #a0c4ff; min-height: 28px; }
+  .container { display: grid; grid-template-columns: 320px 1fr; gap: 0; min-height: calc(100vh - 90px); }
+  .sidebar { background: #16213e; padding: 16px; overflow-y: auto; border-right: 1px solid #0f3460; }
+  .main { padding: 16px; overflow-y: auto; }
+  .section { margin-bottom: 16px; }
+  .section h3 { font-size: 0.9em; color: #e94560; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  label { display: block; font-size: 0.82em; color: #8899aa; margin-bottom: 2px; }
+  input[type="file"] { width: 100%; font-size: 0.82em; margin-bottom: 8px; }
+  input[type="number"], input[type="text"], select {
+    width: 100%; padding: 5px 8px; background: #1a1a2e; border: 1px solid #0f3460;
+    color: #e0e0e0; border-radius: 3px; font-size: 0.85em; margin-bottom: 6px;
+  }
+  input[type="number"]:focus, select:focus { border-color: #e94560; outline: none; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button {
+    padding: 8px 16px; background: #e94560; color: white; border: none;
+    border-radius: 4px; cursor: pointer; font-size: 0.9em; width: 100%;
+    margin-bottom: 6px; transition: background 0.2s;
+  }
+  button:hover { background: #c73650; }
+  button:disabled { background: #555; cursor: not-allowed; }
+  .molecules { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+  .molecules label { display: inline-flex; align-items: center; gap: 3px; color: #e0e0e0; font-size: 0.82em; cursor: pointer; }
+  .molecules input[type="checkbox"] { margin: 0; }
+  .plot-container { background: #16213e; border-radius: 6px; margin-bottom: 12px; min-height: 200px; }
+  #log-area {
+    background: #0d1117; color: #7ee787; font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.78em; padding: 10px; border-radius: 4px; height: 140px;
+    overflow-y: auto; white-space: pre-wrap; border: 1px solid #0f3460;
+  }
+  .result-panel {
+    background: #16213e; border-radius: 6px; padding: 12px; margin-bottom: 12px;
+    border: 1px solid #0f3460; display: none;
+  }
+  .result-panel h3 { margin-bottom: 8px; }
+  .result-panel .rv { font-size: 1.4em; color: #7ee787; }
+  .result-panel .rv-unc { font-size: 0.9em; color: #8899aa; }
+  .result-panel .stats { font-size: 0.82em; color: #a0c4ff; margin-top: 6px; }
+  .param-table { width: 100%; font-size: 0.78em; border-collapse: collapse; margin-top: 8px; }
+  .param-table th, .param-table td { padding: 3px 6px; text-align: left; border-bottom: 1px solid #0f3460; }
+  .param-table th { color: #e94560; }
+  .x-toggle { display: flex; gap: 4px; margin-bottom: 8px; }
+  .x-toggle button { width: auto; padding: 4px 12px; font-size: 0.78em; background: #0f3460; }
+  .x-toggle button.active { background: #e94560; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>VIPER-Web</h1>
+  <span class="subtitle">Velocity and IP Estimator &mdash; Browser Edition</span>
+</div>
+<div id="status-bar">Initializing...</div>
+
+<div class="container">
+  <div class="sidebar">
+
+    <div class="section">
+      <h3>Data</h3>
+      <label>Observation FITS</label>
+      <input type="file" id="obs-file" accept=".fits,.fit">
+      <label>Template FITS (optional)</label>
+      <input type="file" id="tpl-file" accept=".fits,.fit">
+      <div class="row">
+        <div>
+          <label>Order</label>
+          <input type="number" id="order" value="10" min="1" max="28">
+        </div>
+        <div>
+          <label>BERV (km/s)</label>
+          <input type="number" id="berv" step="0.001" placeholder="auto">
+        </div>
+      </div>
+      <button id="btn-load" disabled>Load &amp; Plot</button>
+    </div>
+
+    <div class="section">
+      <h3>Model</h3>
+      <label>Telluric mode</label>
+      <select id="telluric">
+        <option value="add" selected>Forward model (add)</option>
+        <option value="">None</option>
+      </select>
+      <label>Molecules</label>
+      <div class="molecules" id="molecules">
+        <label><input type="checkbox" value="H2O" checked> H2O</label>
+        <label><input type="checkbox" value="CH4" checked> CH4</label>
+        <label><input type="checkbox" value="N2O" checked> N2O</label>
+        <label><input type="checkbox" value="CO2" checked> CO2</label>
+        <label><input type="checkbox" value="CO" checked> CO</label>
+        <label><input type="checkbox" value="O2" checked> O2</label>
+      </div>
+      <div class="row">
+        <div>
+          <label>IP type</label>
+          <select id="ip-type">
+            <option value="g" selected>Gaussian</option>
+            <option value="sg">Super Gaussian</option>
+            <option value="ag">Asym. Gaussian</option>
+            <option value="bg">BiGaussian</option>
+            <option value="mg">Multi Gaussian</option>
+            <option value="mcg">Multi Central G.</option>
+            <option value="lor">Lorentzian</option>
+          </select>
+        </div>
+        <div>
+          <label>IP half-size</label>
+          <input type="number" id="ip-hs" value="50" min="10" max="200">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Norm poly deg</label>
+          <input type="number" id="deg-norm" value="3" min="0" max="10">
+        </div>
+        <div>
+          <label>Wave poly deg</label>
+          <input type="number" id="deg-wave" value="3" min="1" max="6">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>RV guess (km/s)</label>
+          <input type="number" id="rv-guess" value="1.0" step="0.1">
+        </div>
+        <div>
+          <label>Tellshift</label>
+          <select id="tellshift">
+            <option value="0" selected>Off</option>
+            <option value="1">On</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Kappa-sig 1</label>
+          <input type="number" id="kapsig1" value="0" step="0.5" min="0">
+        </div>
+        <div>
+          <label>Kappa-sig 2</label>
+          <input type="number" id="kapsig2" value="3" step="0.5" min="0">
+        </div>
+      </div>
+      <label>Weighting</label>
+      <select id="wgt">
+        <option value="" selected>None</option>
+        <option value="error">Error</option>
+      </select>
+      <button id="btn-fit" disabled>Fit</button>
+    </div>
+
+    <div class="section">
+      <h3>Export</h3>
+      <button id="btn-export-json" disabled>Export JSON</button>
+      <button id="btn-export-csv" disabled>Export CSV</button>
+      <button id="btn-export-png" disabled>Export PNG</button>
+    </div>
+
+  </div>
+
+  <div class="main">
+    <div id="result-panel" class="result-panel">
+      <h3>Result</h3>
+      <div class="rv" id="rv-display"></div>
+      <div class="rv-unc" id="rv-unc-display"></div>
+      <div class="stats" id="stats-display"></div>
+      <table class="param-table" id="param-table">
+        <thead><tr><th>Parameter</th><th>Value</th><th>Uncertainty</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="x-toggle">
+      <button id="btn-xpixel" class="active" onclick="toggleXAxis('pixel')">Pixel</button>
+      <button id="btn-xwave" onclick="toggleXAxis('wave')">Wavelength</button>
+    </div>
+
+    <div id="plot-spectrum" class="plot-container"></div>
+    <div id="plot-residuals" class="plot-container"></div>
+    <div id="plot-ip" class="plot-container"></div>
+
+    <div class="section">
+      <h3>Log</h3>
+      <div id="log-area"></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.plot.ly/plotly-2.35.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
