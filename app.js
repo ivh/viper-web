@@ -287,9 +287,7 @@ json.dumps(_setup_data)
         log(`  Good pixels: ${data.pixel_ok.length} / ${data.pixel.length}`);
 
         plotSpectrum(data);
-        plotResiduals(data);
         plotIP(data);
-        setupAxisSync();
 
         setStatus(`Order ${order} loaded. Ready to fit.`);
         document.getElementById('btn-fit').disabled = false;
@@ -394,9 +392,7 @@ json.dumps(_setup_data)
         log(`  Total good pixels: ${totalPix} across ${orders.length} orders`);
 
         plotMultiSpectrum(data);
-        plotMultiResiduals(data);
         plotIP(data);
-        setupAxisSync();
 
         setStatus(`${orders.length} orders loaded. Ready to fit.`);
         document.getElementById('btn-fit').disabled = false;
@@ -471,7 +467,6 @@ json.dumps(fit_result)
         const prms = fitData.prms ?? 0;
 
         plotSpectrum(fitData, true);
-        plotResiduals(fitData, true);
         plotIP(fitData);
         displayResults(fitData);
 
@@ -545,7 +540,6 @@ json.dumps(fit_result)
 
         fitData._multi = true;
         plotMultiSpectrum(fitData, true);
-        plotMultiResiduals(fitData, true);
         plotIP(fitData);
         displayMultiResults(fitData);
 
@@ -583,33 +577,6 @@ const plotLayout = {
     legend: { orientation: 'h', y: 1.12 },
 };
 
-// sync x-axis zoom/pan between spectrum and residuals
-let _syncingAxis = false;
-function setupAxisSync() {
-    const spec = document.getElementById('plot-spectrum');
-    const resid = document.getElementById('plot-residuals');
-
-    function syncFrom(source, target) {
-        source.on('plotly_relayout', function(ed) {
-            if (_syncingAxis) return;
-            const update = {};
-            if (ed['xaxis.range[0]'] !== undefined) {
-                update['xaxis.range[0]'] = ed['xaxis.range[0]'];
-                update['xaxis.range[1]'] = ed['xaxis.range[1]'];
-            } else if (ed['xaxis.autorange']) {
-                update['xaxis.autorange'] = true;
-            } else {
-                return;
-            }
-            _syncingAxis = true;
-            Plotly.relayout(target, update);
-            _syncingAxis = false;
-        });
-    }
-    syncFrom(spec, resid);
-    syncFrom(resid, spec);
-}
-
 function getXData(pixelArr, waveArr) {
     return xAxis === 'wave' ? waveArr : pixelArr;
 }
@@ -618,48 +585,37 @@ function getXLabel() {
     return xAxis === 'wave' ? 'Vacuum wavelength [A]' : 'Pixel';
 }
 
+const axStyle = { gridcolor: '#0f3460', zerolinecolor: '#0f3460' };
+
 function plotSpectrum(data, isFit = false) {
     const div = document.getElementById('plot-spectrum');
     const xOk = getXData(data.pixel_ok, data.wave_ok);
 
     const traces = [
         {
-            x: xOk,
-            y: data.spec_ok,
-            mode: 'markers',
-            marker: { size: 3, color: '#a0c4ff' },
+            x: xOk, y: data.spec_ok,
+            mode: 'markers', marker: { size: 3, color: '#a0c4ff' },
             name: 'Observation',
         },
         {
-            x: xOk,
-            y: data.model_flux,
-            mode: 'lines',
-            line: { color: '#e94560', width: 1.5 },
+            x: xOk, y: data.model_flux,
+            mode: 'lines', line: { color: '#e94560', width: 1.5 },
             name: isFit ? 'Fitted model' : 'Initial model',
         },
     ];
 
-    // show atmosphere if available
     if (data.atm_flux && data.lnwave_j && !isFit) {
-        const atmX = xAxis === 'wave'
-            ? data.lnwave_j.map(lw => Math.exp(lw))
-            : null;
+        const atmX = xAxis === 'wave' ? data.lnwave_j.map(lw => Math.exp(lw)) : null;
         if (atmX) {
-            // scale atmosphere to data range
             const ymax = Math.max(...data.spec_ok.filter(v => isFinite(v)));
             traces.push({
-                x: atmX,
-                y: data.atm_flux.map(v => v * ymax),
-                mode: 'lines',
-                line: { color: '#7ee787', width: 0.8 },
-                name: 'Atmosphere',
-                yaxis: 'y',
-                opacity: 0.5,
+                x: atmX, y: data.atm_flux.map(v => v * ymax),
+                mode: 'lines', line: { color: '#7ee787', width: 0.8 },
+                name: 'Atmosphere', opacity: 0.5,
             });
         }
     }
 
-    // show flagged points
     if (data.flag && data.pixel) {
         const xAll = xAxis === 'wave' ? data.wave : data.pixel;
         const flagged_x = [], flagged_y = [];
@@ -671,59 +627,33 @@ function plotSpectrum(data, isFit = false) {
         }
         if (flagged_x.length > 0) {
             traces.push({
-                x: flagged_x,
-                y: flagged_y,
-                mode: 'markers',
-                marker: { size: 3, color: '#555', symbol: 'x' },
+                x: flagged_x, y: flagged_y,
+                mode: 'markers', marker: { size: 3, color: '#555', symbol: 'x' },
                 name: 'Flagged',
             });
         }
     }
 
-    const layout = {
-        ...plotLayout,
-        height: 350,
-        title: { text: 'Spectrum + Model', font: { size: 13, color: '#e94560' } },
-        xaxis: { ...plotLayout.xaxis, title: getXLabel() },
-        yaxis: { ...plotLayout.yaxis, title: 'Flux' },
-    };
-
-    Plotly.react(div, traces, layout, { responsive: true });
-}
-
-function plotResiduals(data, isFit = false) {
-    const div = document.getElementById('plot-residuals');
-
-    if (!data.residuals || data.residuals.length === 0) {
-        Plotly.react(div, [], { ...plotLayout, height: 180 }, { responsive: true });
-        return;
+    // residuals on shared x-axis, separate y-axis
+    if (data.residuals && data.residuals.length > 0) {
+        traces.push({
+            x: xOk, y: data.residuals,
+            mode: 'markers', marker: { size: 2.5, color: '#a0c4ff' },
+            name: 'Residuals', xaxis: 'x', yaxis: 'y2',
+        });
+        traces.push({
+            x: [xOk[0], xOk[xOk.length - 1]], y: [0, 0],
+            mode: 'lines', line: { color: '#e94560', width: 1, dash: 'dash' },
+            showlegend: false, xaxis: 'x', yaxis: 'y2',
+        });
     }
 
-    const xOk = getXData(data.pixel_ok, data.wave_ok);
-
-    const traces = [
-        {
-            x: xOk,
-            y: data.residuals,
-            mode: 'markers',
-            marker: { size: 2.5, color: '#a0c4ff' },
-            name: 'Residuals',
-        },
-        {
-            x: [xOk[0], xOk[xOk.length - 1]],
-            y: [0, 0],
-            mode: 'lines',
-            line: { color: '#e94560', width: 1, dash: 'dash' },
-            showlegend: false,
-        },
-    ];
-
     const layout = {
-        ...plotLayout,
-        height: 180,
-        title: { text: isFit ? 'Residuals (obs - model)' : 'Residuals (initial)', font: { size: 13, color: '#e94560' } },
-        xaxis: { ...plotLayout.xaxis, title: getXLabel() },
-        yaxis: { ...plotLayout.yaxis, title: 'Residual' },
+        ...plotLayout, height: 500,
+        title: { text: 'Spectrum + Model', font: { size: 13, color: '#e94560' } },
+        xaxis: { ...axStyle, title: getXLabel(), anchor: 'y2' },
+        yaxis: { ...axStyle, title: 'Flux', domain: [0.28, 1] },
+        yaxis2: { ...axStyle, title: 'Residual', domain: [0, 0.22] },
     };
 
     Plotly.react(div, traces, layout, { responsive: true });
@@ -782,54 +712,37 @@ function plotMultiSpectrum(data, isFit = false) {
             mode: 'lines', line: { color: '#e94560', width: 1.5 },
             showlegend: false,
         });
+
+        // residuals on y2
+        if (od.residuals) {
+            traces.push({
+                x: xOk, y: od.residuals,
+                mode: 'markers', marker: { size: 2.5, color },
+                showlegend: false, xaxis: 'x', yaxis: 'y2',
+            });
+        }
     });
 
-    const layout = {
-        ...plotLayout, height: 700,
-        title: { text: `Spectrum + Model (${orders.length} orders)`, font: { size: 13, color: '#e94560' } },
-        xaxis: { ...plotLayout.xaxis, title: getXLabel() },
-        yaxis: { ...plotLayout.yaxis, title: 'Flux' },
-    };
-    Plotly.react(div, traces, layout, { responsive: true });
-}
-
-function plotMultiResiduals(data, isFit = false) {
-    const div = document.getElementById('plot-residuals');
-    const traces = [];
-    const orders = data.orders || Object.keys(data.per_order).map(Number).sort((a,b) => a-b);
-
-    orders.forEach((o, idx) => {
-        const od = data.per_order[String(o)];
-        const color = orderColors[idx % orderColors.length];
-        const xOk = getXData(od.pixel_ok, od.wave_ok);
-
-        traces.push({
-            x: xOk, y: od.residuals,
-            mode: 'markers', marker: { size: 2.5, color },
-            showlegend: false,
-        });
-    });
-
-    // zero line spanning all orders
+    // zero line for residuals
     let xAll = [];
     orders.forEach(o => {
-        const od = data.per_order[String(o)];
-        const xOk = getXData(od.pixel_ok, od.wave_ok);
+        const xOk = getXData(data.per_order[String(o)].pixel_ok, data.per_order[String(o)].wave_ok);
         if (xOk.length) { xAll.push(xOk[0]); xAll.push(xOk[xOk.length - 1]); }
     });
     if (xAll.length) {
         traces.push({
             x: [Math.min(...xAll), Math.max(...xAll)], y: [0, 0],
             mode: 'lines', line: { color: '#e94560', width: 1, dash: 'dash' },
-            showlegend: false,
+            showlegend: false, xaxis: 'x', yaxis: 'y2',
         });
     }
 
     const layout = {
-        ...plotLayout, height: 360,
-        title: { text: isFit ? 'Residuals (obs - model)' : 'Residuals (initial)', font: { size: 13, color: '#e94560' } },
-        xaxis: { ...plotLayout.xaxis, title: getXLabel() },
-        yaxis: { ...plotLayout.yaxis, title: 'Residual' },
+        ...plotLayout, height: 900,
+        title: { text: `Spectrum + Model (${orders.length} orders)`, font: { size: 13, color: '#e94560' } },
+        xaxis: { ...axStyle, title: getXLabel(), anchor: 'y2' },
+        yaxis: { ...axStyle, title: 'Flux', domain: [0.28, 1] },
+        yaxis2: { ...axStyle, title: 'Residual', domain: [0, 0.22] },
     };
     Plotly.react(div, traces, layout, { responsive: true });
 }
@@ -920,34 +833,19 @@ function toggleXAxis(mode) {
     document.getElementById('btn-xwave').className = mode === 'wave' ? 'active' : '';
 
     if (setupResult) {
+        const plotFn = setupResult._multi ? plotMultiSpectrum : plotSpectrum;
         try {
             const hasFit = pyodide.runPython(`'fit_result' in dir() and fit_result.get('converged', False)`);
             if (hasFit) {
                 const jsonStr = pyodide.runPython('json.dumps(fit_result)');
                 const fitData = JSON.parse(jsonStr);
-                if (setupResult._multi) {
-                    fitData._multi = true;
-                    plotMultiSpectrum(fitData, true);
-                    plotMultiResiduals(fitData, true);
-                } else {
-                    plotSpectrum(fitData, true);
-                    plotResiduals(fitData, true);
-                }
-            } else if (setupResult._multi) {
-                plotMultiSpectrum(setupResult);
-                plotMultiResiduals(setupResult);
+                if (setupResult._multi) fitData._multi = true;
+                plotFn(fitData, true);
             } else {
-                plotSpectrum(setupResult);
-                plotResiduals(setupResult);
+                plotFn(setupResult);
             }
         } catch(e) {
-            if (setupResult._multi) {
-                plotMultiSpectrum(setupResult);
-                plotMultiResiduals(setupResult);
-            } else {
-                plotSpectrum(setupResult);
-                plotResiduals(setupResult);
-            }
+            plotFn(setupResult);
         }
     }
 }
