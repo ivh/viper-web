@@ -56,6 +56,10 @@
   .param-grid .pg-item { display: flex; justify-content: space-between; border-bottom: 1px solid #0f346040; padding: 1px 0; }
   .param-grid .pg-key { color: #8899aa; }
   .param-grid .pg-val { color: #e0e0e0; }
+  .fit-info {
+    background: #0f3460; border: 1px solid #e94560; border-radius: 6px;
+    padding: 10px 14px; margin-bottom: 12px; font-size: 0.88em; color: #ffd6a5;
+  }
   .x-toggle { display: flex; gap: 4px; margin-bottom: 8px; }
   .x-toggle button { width: auto; padding: 4px 12px; font-size: 0.78em; background: #0f3460; }
   .x-toggle button.active { background: #e94560; }
@@ -80,6 +84,13 @@
       <input type="file" id="tpl-file" accept=".fits,.fit">
       <div class="row">
         <div>
+          <label>Fit mode</label>
+          <select id="fit-mode" onchange="toggleFitMode()">
+            <option value="single" selected>Single order</option>
+            <option value="multi">All orders</option>
+          </select>
+        </div>
+        <div id="order-single">
           <label>Order</label>
           <input type="number" id="order" value="10" min="1" max="28">
         </div>
@@ -176,6 +187,9 @@
   </div>
 
   <div class="main">
+    <div id="fit-info" class="fit-info" style="display:none">
+      Multi-order fitting takes about 2 minutes. The browser may warn that the page is unresponsive &mdash; choose "Wait" to let it finish.
+    </div>
     <div id="result-panel" class="result-panel">
       <div class="result-row">
         <div class="result-rv" id="rv-display"></div>
@@ -188,8 +202,8 @@
     </div>
 
     <div class="x-toggle">
-      <button id="btn-xpixel" class="active" onclick="toggleXAxis('pixel')">Pixel</button>
-      <button id="btn-xwave" onclick="toggleXAxis('wave')">Wavelength</button>
+      <button id="btn-xwave" class="active" onclick="toggleXAxis('wave')">Wavelength</button>
+      <button id="btn-xpixel" onclick="toggleXAxis('pixel')">Pixel</button>
     </div>
 
     <div id="plot-spectrum" class="plot-container"></div>

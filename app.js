@@ -5,7 +5,8 @@ let pyodide = null;
 let obsLoaded = false;
 let tplLoaded = false;
 let setupResult = null;  // Python dict proxy from setup_model
-let xAxis = 'pixel';     // 'pixel' or 'wave'
+let xAxis = 'wave';      // 'pixel' or 'wave'
+let fitMode = 'single';  // 'single' or 'multi'
 
 const statusBar = document.getElementById('status-bar');
 const logArea = document.getElementById('log-area');
@@ -86,8 +87,9 @@ info = scan_fits_header('/home/pyodide/obs.fits')
 json.dumps(info)
 `);
         const meta = JSON.parse(info);
+        availableOrders = meta.available_orders;
         log(`  Setting: ${meta.setting}, BERV: ${meta.berv} km/s, Date: ${meta.dateobs}`);
-        log(`  Available orders: ${meta.available_orders.join(', ')}`);
+        log(`  Available orders: ${availableOrders.join(', ')}`);
 
         // auto-populate BERV field
         const bervInput = document.getElementById('berv');
@@ -182,6 +184,15 @@ function getBandsForWavelength(wmin, wmax) {
     return bands_all.slice(iStart, iEnd);
 }
 
+// --- Fit mode toggle ---
+
+let availableOrders = [];
+
+function toggleFitMode() {
+    fitMode = document.getElementById('fit-mode').value;
+    document.getElementById('order-single').style.display = fitMode === 'single' ? '' : 'none';
+}
+
 // --- Load & Plot ---
 
 document.getElementById('btn-load').addEventListener('click', async () => {
@@ -190,6 +201,14 @@ document.getElementById('btn-load').addEventListener('click', async () => {
         return;
     }
 
+    if (fitMode === 'multi') {
+        await loadMultiOrder();
+    } else {
+        await loadSingleOrder();
+    }
+});
+
+async function loadSingleOrder() {
     const order = parseInt(document.getElementById('order').value);
     const telluric = document.getElementById('telluric').value;
     const ipType = document.getElementById('ip-type').value;
@@ -200,7 +219,6 @@ document.getElementById('btn-load').addEventListener('click', async () => {
     const tellshift = document.getElementById('tellshift').value === '1';
     const bervVal = document.getElementById('berv').value;
 
-    // get selected molecules
     const molCheckboxes = document.querySelectorAll('#molecules input[type="checkbox"]:checked');
     const molecules = Array.from(molCheckboxes).map(cb => cb.value);
 
@@ -210,10 +228,8 @@ document.getElementById('btn-load').addEventListener('click', async () => {
     document.getElementById('btn-load').disabled = true;
     document.getElementById('btn-fit').disabled = true;
 
-    // first read raw spectrum to get wavelength range for atmosphere
     try {
         if (telluric === 'add') {
-            // quick read to get wavelength range
             const wrange = pyodide.runPython(`
 import json, numpy as np
 from read_crires import read_spectrum
@@ -229,7 +245,6 @@ json.dumps([float(np.min(_w)), float(np.max(_w))])
             }
         }
 
-        // build Python call
         const tplArg = tplLoaded ? "'/home/pyodide/tpl.fits'" : 'None';
         const molArg = molecules.length > 0 ? `[${molecules.map(m => `'${m}'`).join(',')}]` : "['all']";
         const bervArg = bervVal ? `berv_override=${bervVal}` : '';
@@ -253,7 +268,6 @@ result = setup_model(
     ${bervArg}
 )
 
-# separate serializable data from Python objects
 _setup_data = {}
 _setup_internal = {}
 for k, v in result.items():
@@ -275,6 +289,7 @@ json.dumps(_setup_data)
         plotSpectrum(data);
         plotResiduals(data);
         plotIP(data);
+        setupAxisSync();
 
         setStatus(`Order ${order} loaded. Ready to fit.`);
         document.getElementById('btn-fit').disabled = false;
@@ -287,12 +302,127 @@ json.dumps(_setup_data)
     }
 
     document.getElementById('btn-load').disabled = false;
-});
+}
+
+async function loadMultiOrder() {
+    const orders = availableOrders.slice();
+    if (orders.length === 0) {
+        log('No available orders found. Upload a FITS file first.');
+        return;
+    }
+
+    const telluric = document.getElementById('telluric').value;
+    const ipType = document.getElementById('ip-type').value;
+    const ipHs = parseInt(document.getElementById('ip-hs').value);
+    const degNorm = parseInt(document.getElementById('deg-norm').value);
+    const degWave = parseInt(document.getElementById('deg-wave').value);
+    const rvGuess = parseFloat(document.getElementById('rv-guess').value);
+    const tellshift = document.getElementById('tellshift').value === '1';
+    const bervVal = document.getElementById('berv').value;
+
+    const molCheckboxes = document.querySelectorAll('#molecules input[type="checkbox"]:checked');
+    const molecules = Array.from(molCheckboxes).map(cb => cb.value);
+
+    log(`Loading orders ${orders.join(', ')} (multi-order mode)...`);
+    setStatus(`Loading ${orders.length} orders...`);
+
+    document.getElementById('btn-load').disabled = true;
+    document.getElementById('btn-fit').disabled = true;
+
+    try {
+        // load atmosphere for the full wavelength range
+        if (telluric === 'add') {
+            const wrange = pyodide.runPython(`
+import json, numpy as np
+from read_crires import read_spectrum
+_wmin_all, _wmax_all = [], []
+for _o in ${JSON.stringify(orders)}:
+    _p, _w, _s, _e, _f, _b, _d = read_spectrum('/home/pyodide/obs.fits', _o)
+    _wmin_all.append(float(np.min(_w)))
+    _wmax_all.append(float(np.max(_w)))
+json.dumps([min(_wmin_all), max(_wmax_all)])
+`);
+            const [wmin, wmax] = JSON.parse(wrange);
+            const bands = getBandsForWavelength(wmin, wmax);
+            log(`  Wavelength range: ${wmin.toFixed(0)} - ${wmax.toFixed(0)} A, bands: ${bands.join(', ')}`);
+            for (const band of bands) {
+                await loadAtmosphere(band);
+            }
+        }
+
+        const tplArg = tplLoaded ? "'/home/pyodide/tpl.fits'" : 'None';
+        const molArg = molecules.length > 0 ? `[${molecules.map(m => `'${m}'`).join(',')}]` : "['all']";
+        const bervArg = bervVal ? `berv_override=${bervVal}` : '';
+
+        const code = `
+import json, numpy as np
+from fitting import setup_multi_order
+
+result = setup_multi_order(
+    '/home/pyodide/obs.fits',
+    orders=${JSON.stringify(orders)},
+    tpl_path=${tplArg},
+    molecules=${molArg},
+    telluric='${telluric}',
+    tellshift=${tellshift ? 'True' : 'False'},
+    deg_norm=${degNorm},
+    deg_wave=${degWave},
+    ip_type='${ipType}',
+    ip_hs=${ipHs},
+    rv_guess=${rvGuess},
+    ${bervArg}
+)
+
+_setup_data = {
+    'orders': result['orders'],
+    'per_order': result['per_order'],
+    'berv': result['berv'],
+    'dateobs': result['dateobs'],
+    'ip_vk': result['ip_vk'],
+    'ip_shape': result['ip_shape'],
+}
+json.dumps(_setup_data)
+`;
+        setStatus('Building multi-order model...');
+        const jsonStr = pyodide.runPython(code);
+        const data = JSON.parse(jsonStr);
+        data._multi = true;
+        setupResult = data;
+
+        const totalPix = Object.values(data.per_order).reduce((s, o) => s + o.pixel_ok.length, 0);
+        log(`  BERV: ${data.berv} km/s, Date: ${data.dateobs}`);
+        log(`  Total good pixels: ${totalPix} across ${orders.length} orders`);
+
+        plotMultiSpectrum(data);
+        plotMultiResiduals(data);
+        plotIP(data);
+        setupAxisSync();
+
+        setStatus(`${orders.length} orders loaded. Ready to fit.`);
+        document.getElementById('btn-fit').disabled = false;
+        document.getElementById('btn-export-png').disabled = false;
+
+    } catch(err) {
+        log(`Error: ${err.message}`);
+        setStatus('Error loading data.');
+        console.error(err);
+    }
+
+    document.getElementById('btn-load').disabled = false;
+}
 
 
 // --- Fit ---
 
 document.getElementById('btn-fit').addEventListener('click', async () => {
+    if (fitMode === 'multi' && setupResult && setupResult._multi) {
+        await fitMultiOrder();
+    } else {
+        await fitSingleOrder();
+    }
+});
+
+async function fitSingleOrder() {
     log('Starting fit...');
     setStatus('Fitting...');
     document.getElementById('btn-fit').disabled = true;
@@ -340,12 +470,9 @@ json.dumps(fit_result)
         const e_rv = fitData.e_rv ?? 0;
         const prms = fitData.prms ?? 0;
 
-        // update plots first
         plotSpectrum(fitData, true);
         plotResiduals(fitData, true);
         plotIP(fitData);
-
-        // display results
         displayResults(fitData);
 
         log(`Fit converged: RV = ${rv.toFixed(2)} +/- ${e_rv.toFixed(2)} m/s`);
@@ -363,7 +490,85 @@ json.dumps(fit_result)
 
     document.getElementById('btn-fit').disabled = false;
     document.getElementById('btn-load').disabled = false;
-});
+}
+
+async function fitMultiOrder() {
+    const infoBox = document.getElementById('fit-info');
+    infoBox.style.display = 'block';
+    log('Starting multi-order fit...');
+    setStatus('Fitting (multi-order)...');
+    document.getElementById('btn-fit').disabled = true;
+    document.getElementById('btn-load').disabled = true;
+    // yield to browser so the info box renders before the blocking fit
+    await new Promise(r => setTimeout(r, 50));
+
+    const ipType = document.getElementById('ip-type').value;
+    const rvGuess = parseFloat(document.getElementById('rv-guess').value);
+    const tellshift = document.getElementById('tellshift').value === '1';
+    const kapsig1 = parseFloat(document.getElementById('kapsig1').value);
+    const kapsig2 = parseFloat(document.getElementById('kapsig2').value);
+    const degNorm = parseInt(document.getElementById('deg-norm').value);
+    const degWave = parseInt(document.getElementById('deg-wave').value);
+    const wgt = document.getElementById('wgt').value;
+
+    try {
+        const code = `
+import json
+from fitting import fit_multi_order
+
+fit_result = fit_multi_order(
+    result,
+    kapsig=(${kapsig1}, ${kapsig2}),
+    deg_norm=${degNorm},
+    deg_wave=${degWave},
+    ip_type='${ipType}',
+    rv_guess=${rvGuess},
+    tellshift=${tellshift ? 'True' : 'False'},
+    wgt='${wgt}',
+)
+
+json.dumps(fit_result)
+`;
+        const jsonStr = pyodide.runPython(code);
+        const fitData = JSON.parse(jsonStr);
+
+        if (!fitData.converged) {
+            log(`Multi-order fit failed: ${fitData.error}`);
+            setStatus('Multi-order fit did not converge.');
+            document.getElementById('btn-fit').disabled = false;
+            document.getElementById('btn-load').disabled = false;
+            return;
+        }
+
+        const rv = fitData.rv ?? 0;
+        const e_rv = fitData.e_rv ?? 0;
+
+        fitData._multi = true;
+        plotMultiSpectrum(fitData, true);
+        plotMultiResiduals(fitData, true);
+        plotIP(fitData);
+        displayMultiResults(fitData);
+
+        log(`Multi-order fit converged: RV = ${rv.toFixed(2)} +/- ${e_rv.toFixed(2)} m/s`);
+        for (const o of fitData.orders) {
+            const od = fitData.per_order[String(o)];
+            log(`  Order ${o}: %rms = ${od.prms.toFixed(4)}%`);
+        }
+        setStatus(`Fit complete. RV = ${rv.toFixed(2)} +/- ${e_rv.toFixed(2)} m/s`);
+
+        document.getElementById('btn-export-json').disabled = false;
+        document.getElementById('btn-export-csv').disabled = false;
+
+    } catch(err) {
+        log(`Fit error: ${err.message}`);
+        setStatus('Fit error.');
+        console.error(err);
+    }
+
+    infoBox.style.display = 'none';
+    document.getElementById('btn-fit').disabled = false;
+    document.getElementById('btn-load').disabled = false;
+}
 
 
 // --- Plotting ---
@@ -377,6 +582,33 @@ const plotLayout = {
     yaxis: { gridcolor: '#0f3460', zerolinecolor: '#0f3460' },
     legend: { orientation: 'h', y: 1.12 },
 };
+
+// sync x-axis zoom/pan between spectrum and residuals
+let _syncingAxis = false;
+function setupAxisSync() {
+    const spec = document.getElementById('plot-spectrum');
+    const resid = document.getElementById('plot-residuals');
+
+    function syncFrom(source, target) {
+        source.on('plotly_relayout', function(ed) {
+            if (_syncingAxis) return;
+            const update = {};
+            if (ed['xaxis.range[0]'] !== undefined) {
+                update['xaxis.range[0]'] = ed['xaxis.range[0]'];
+                update['xaxis.range[1]'] = ed['xaxis.range[1]'];
+            } else if (ed['xaxis.autorange']) {
+                update['xaxis.autorange'] = true;
+            } else {
+                return;
+            }
+            _syncingAxis = true;
+            Plotly.relayout(target, update);
+            _syncingAxis = false;
+        });
+    }
+    syncFrom(spec, resid);
+    syncFrom(resid, spec);
+}
 
 function getXData(pixelArr, waveArr) {
     return xAxis === 'wave' ? waveArr : pixelArr;
@@ -526,6 +758,120 @@ function plotIP(data) {
 }
 
 
+// --- Multi-order plotting ---
+
+const orderColors = ['#a0c4ff', '#ffadad', '#bdb2ff', '#caffbf', '#ffd6a5', '#fdffb6', '#9bf6ff', '#ffc6ff'];
+
+function plotMultiSpectrum(data, isFit = false) {
+    const div = document.getElementById('plot-spectrum');
+    const traces = [];
+    const orders = data.orders || Object.keys(data.per_order).map(Number).sort((a,b) => a-b);
+
+    orders.forEach((o, idx) => {
+        const od = data.per_order[String(o)];
+        const color = orderColors[idx % orderColors.length];
+        const xOk = getXData(od.pixel_ok, od.wave_ok);
+
+        traces.push({
+            x: xOk, y: od.spec_ok,
+            mode: 'markers', marker: { size: 3, color },
+            showlegend: false,
+        });
+        traces.push({
+            x: xOk, y: od.model_flux,
+            mode: 'lines', line: { color: '#e94560', width: 1.5 },
+            showlegend: false,
+        });
+    });
+
+    const layout = {
+        ...plotLayout, height: 700,
+        title: { text: `Spectrum + Model (${orders.length} orders)`, font: { size: 13, color: '#e94560' } },
+        xaxis: { ...plotLayout.xaxis, title: getXLabel() },
+        yaxis: { ...plotLayout.yaxis, title: 'Flux' },
+    };
+    Plotly.react(div, traces, layout, { responsive: true });
+}
+
+function plotMultiResiduals(data, isFit = false) {
+    const div = document.getElementById('plot-residuals');
+    const traces = [];
+    const orders = data.orders || Object.keys(data.per_order).map(Number).sort((a,b) => a-b);
+
+    orders.forEach((o, idx) => {
+        const od = data.per_order[String(o)];
+        const color = orderColors[idx % orderColors.length];
+        const xOk = getXData(od.pixel_ok, od.wave_ok);
+
+        traces.push({
+            x: xOk, y: od.residuals,
+            mode: 'markers', marker: { size: 2.5, color },
+            showlegend: false,
+        });
+    });
+
+    // zero line spanning all orders
+    let xAll = [];
+    orders.forEach(o => {
+        const od = data.per_order[String(o)];
+        const xOk = getXData(od.pixel_ok, od.wave_ok);
+        if (xOk.length) { xAll.push(xOk[0]); xAll.push(xOk[xOk.length - 1]); }
+    });
+    if (xAll.length) {
+        traces.push({
+            x: [Math.min(...xAll), Math.max(...xAll)], y: [0, 0],
+            mode: 'lines', line: { color: '#e94560', width: 1, dash: 'dash' },
+            showlegend: false,
+        });
+    }
+
+    const layout = {
+        ...plotLayout, height: 360,
+        title: { text: isFit ? 'Residuals (obs - model)' : 'Residuals (initial)', font: { size: 13, color: '#e94560' } },
+        xaxis: { ...plotLayout.xaxis, title: getXLabel() },
+        yaxis: { ...plotLayout.yaxis, title: 'Residual' },
+    };
+    Plotly.react(div, traces, layout, { responsive: true });
+}
+
+function displayMultiResults(fitData) {
+    const panel = document.getElementById('result-panel');
+    panel.style.display = 'block';
+
+    const rv = fitData.rv ?? 0;
+    const e_rv = fitData.e_rv ?? 0;
+    const berv = fitData.berv ?? 0;
+
+    document.getElementById('rv-display').innerHTML =
+        `RV = ${rv.toFixed(2)} <span class="unc">+/- ${e_rv.toFixed(2)} m/s</span>`;
+
+    const orderRms = fitData.orders.map((o, i) =>
+        `<span>O${o}: ${(fitData.prms_all[i] ?? 0).toFixed(3)}%</span>`
+    ).join('');
+
+    const stats = document.getElementById('stats-display');
+    stats.innerHTML = [
+        `<span>avg rms ${(fitData.prms ?? 0).toFixed(3)}%</span>`,
+        `<span>BERV ${berv.toFixed(3)} km/s</span>`,
+        `<span>${fitData.dateobs}</span>`,
+        orderRms,
+    ].join('');
+
+    const grid = document.getElementById('param-grid');
+    grid.innerHTML = '';
+    if (fitData.params) {
+        const label = (k) => k.replace(/[()' ]/g, '').replace(/,/g, '.');
+        for (const [key, val] of Object.entries(fitData.params)) {
+            if (val.value == null) continue;
+            const unc = val.unc != null ? ` <span style="color:#556">\u00b1 ${val.unc.toPrecision(3)}</span>` : '';
+            const div = document.createElement('div');
+            div.className = 'pg-item';
+            div.innerHTML = `<span class="pg-key">${label(key)}</span><span class="pg-val">${val.value.toPrecision(6)}${unc}</span>`;
+            grid.appendChild(div);
+        }
+    }
+}
+
 // --- Results display ---
 
 function displayResults(fitData) {
@@ -573,23 +919,35 @@ function toggleXAxis(mode) {
     document.getElementById('btn-xpixel').className = mode === 'pixel' ? 'active' : '';
     document.getElementById('btn-xwave').className = mode === 'wave' ? 'active' : '';
 
-    // re-render existing data
     if (setupResult) {
-        // check if we have fit data on the python side
         try {
             const hasFit = pyodide.runPython(`'fit_result' in dir() and fit_result.get('converged', False)`);
             if (hasFit) {
                 const jsonStr = pyodide.runPython('json.dumps(fit_result)');
                 const fitData = JSON.parse(jsonStr);
-                plotSpectrum(fitData, true);
-                plotResiduals(fitData, true);
+                if (setupResult._multi) {
+                    fitData._multi = true;
+                    plotMultiSpectrum(fitData, true);
+                    plotMultiResiduals(fitData, true);
+                } else {
+                    plotSpectrum(fitData, true);
+                    plotResiduals(fitData, true);
+                }
+            } else if (setupResult._multi) {
+                plotMultiSpectrum(setupResult);
+                plotMultiResiduals(setupResult);
             } else {
                 plotSpectrum(setupResult);
                 plotResiduals(setupResult);
             }
         } catch(e) {
-            plotSpectrum(setupResult);
-            plotResiduals(setupResult);
+            if (setupResult._multi) {
+                plotMultiSpectrum(setupResult);
+                plotMultiResiduals(setupResult);
+            } else {
+                plotSpectrum(setupResult);
+                plotResiduals(setupResult);
+            }
         }
     }
 }
@@ -611,9 +969,18 @@ document.getElementById('btn-export-csv').addEventListener('click', () => {
     try {
         const jsonStr = pyodide.runPython('json.dumps(fit_result)');
         const data = JSON.parse(jsonStr);
-        let csv = 'pixel,wavelength,flux,model,residual\n';
-        for (let i = 0; i < data.pixel_ok.length; i++) {
-            csv += `${data.pixel_ok[i]},${data.wave_ok[i]},${data.spec_ok[i]},${data.model_flux[i]},${data.residuals[i]}\n`;
+        let csv = 'order,pixel,wavelength,flux,model,residual\n';
+        if (data.per_order) {
+            for (const o of data.orders) {
+                const od = data.per_order[String(o)];
+                for (let i = 0; i < od.pixel_ok.length; i++) {
+                    csv += `${o},${od.pixel_ok[i]},${od.wave_ok[i]},${od.spec_ok[i]},${od.model_flux[i]},${od.residuals[i]}\n`;
+                }
+            }
+        } else {
+            for (let i = 0; i < data.pixel_ok.length; i++) {
+                csv += `,${data.pixel_ok[i]},${data.wave_ok[i]},${data.spec_ok[i]},${data.model_flux[i]},${data.residuals[i]}\n`;
+            }
         }
         downloadBlob(csv, 'viper_result.csv', 'text/csv');
         log('Exported CSV.');

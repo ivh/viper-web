@@ -382,3 +382,276 @@ def _load_atmosphere(lnwave_j, lmin, lmax, wave_obs, atmos_dir,
         par_atm.append((1, np.inf))
 
     return specs_molec, par_atm
+
+
+def setup_multi_order(obs_path, orders, tpl_path=None, atmos_dir='/home/pyodide/atmos',
+                      molecules=None, telluric='add', tellshift=False,
+                      deg_norm=3, deg_wave=3, ip_type='g', ip_hs=50,
+                      rv_guess=1.0, vcut=100, berv_override=None):
+    '''Set up models for multiple orders with shared atmosphere parameters.'''
+    order_results = []
+    for o in orders:
+        r = setup_model(obs_path, o, tpl_path=tpl_path, atmos_dir=atmos_dir,
+                        molecules=molecules, telluric=telluric, tellshift=tellshift,
+                        deg_norm=deg_norm, deg_wave=deg_wave, ip_type=ip_type,
+                        ip_hs=ip_hs, rv_guess=rv_guess, vcut=vcut,
+                        berv_override=berv_override)
+        order_results.append(r)
+
+    # build combined params: shared rv+atm, per-order norm/wave/ip/bkg
+    par = Params()
+    par.rv = order_results[0]['_par'].rv
+    par.atm = list(order_results[0]['_par'].atm)
+
+    for i, (o, r) in enumerate(zip(orders, order_results)):
+        opar = r['_par']
+        par[f'norm_o{o}'] = list(opar.norm)
+        par[f'wave_o{o}'] = list(opar.wave)
+        par[f'ip_o{o}'] = list(opar.ip)
+        par[f'bkg_o{o}'] = list(opar.bkg)
+
+    # per-order data for JS plotting
+    per_order = {}
+    for o, r in zip(orders, order_results):
+        per_order[str(o)] = {
+            'pixel': r['pixel'], 'wave': r['wave'], 'spec': r['spec'],
+            'err': r['err'], 'flag': r['flag'],
+            'pixel_ok': r['pixel_ok'], 'wave_ok': r['wave_ok'],
+            'spec_ok': r['spec_ok'], 'model_flux': r['model_flux'],
+            'residuals': r['residuals'],
+            'lnwave_j': r['lnwave_j'],
+            'atm_flux': r['atm_flux'],
+        }
+
+    return {
+        'orders': orders,
+        'per_order': per_order,
+        'berv': order_results[0]['berv'],
+        'dateobs': order_results[0]['dateobs'],
+        'ip_vk': order_results[0]['ip_vk'],
+        'ip_shape': order_results[0]['ip_shape'],
+        '_order_results': order_results,
+        '_par': par,
+        '_has_template': tpl_path is not None,
+    }
+
+
+def _order_par(par, o):
+    '''Extract per-order params into a dict the model.__call__ expects.'''
+    opar = Params()
+    opar.rv = par.rv
+    opar.norm = par[f'norm_o{o}']
+    opar.wave = par[f'wave_o{o}']
+    opar.ip = par[f'ip_o{o}']
+    opar.atm = par.atm
+    opar.bkg = par[f'bkg_o{o}']
+    return opar
+
+
+def _fit_multi(par, orders, models, pixels_all, specs_all, sigs_all, npix):
+    '''Run curve_fit (Levenberg-Marquardt) for the multi-order model.
+
+    Returns (True, fitted_par) or (False, error_message).
+    '''
+    from scipy.optimize import curve_fit
+
+    pixel_cat = np.concatenate(pixels_all)
+    spec_cat = np.concatenate(specs_all)
+    sig_cat = np.concatenate(sigs_all)
+    boundaries = np.cumsum([0] + npix)
+
+    varykeys, varyvals = zip(*par.vary().items())
+    npar = len(varyvals)
+
+    def multi_model(x_unused, *params):
+        pnew = par + dict(zip(varykeys, params))
+        out = np.empty(len(pixel_cat))
+        for i, o in enumerate(orders):
+            out[boundaries[i]:boundaries[i + 1]] = \
+                models[i](pixels_all[i], **_order_par(pnew, o))
+        return out
+
+    try:
+        popt, pcov = curve_fit(multi_model, pixel_cat, spec_cat, p0=varyvals,
+                               sigma=sig_cat, absolute_sigma=False, epsfcn=1e-12,
+                               maxfev=800 * (npar + 1))
+    except Exception as e:
+        return False, str(e)
+
+    par_fit = par + dict(zip(varykeys, popt))
+    perr = np.sqrt(np.diag(pcov))
+    for k, v in zip(varykeys, perr):
+        par_fit[k].unc = v
+
+    return True, par_fit
+
+
+def fit_multi_order(setup_result, kapsig=(0, 3), deg_norm=3, deg_wave=3,
+                    ip_type='g', rv_guess=None, tellshift=False, wgt=''):
+    '''Fit multiple orders simultaneously with shared rv and atm parameters.'''
+    order_results = setup_result['_order_results']
+    orders = setup_result['orders']
+    par = Params(setup_result['_par'])
+
+    if rv_guess is not None and setup_result.get('_has_template', False):
+        par.rv = rv_guess
+
+    # collect per-order arrays
+    models = []
+    pixels_all = []
+    specs_all = []
+    flags_all = []
+    sigs_all = []
+    parguess_waves = []
+    npix = []
+
+    for i, (o, r) in enumerate(zip(orders, order_results)):
+        S_mod = r['_S_mod']
+        pixel = r['_pixel']
+        spec_obs = r['_spec_obs']
+        err_obs = r['_err_obs']
+        flag_obs = r['_flag_obs'].copy()
+
+        sig = err_obs.copy() if wgt == 'error' else np.ones_like(spec_obs)
+
+        i_ok = np.where(flag_obs == 0)[0]
+        pixel_ok = pixel[i_ok]
+        spec_ok = spec_obs[i_ok]
+        sig_ok = sig[i_ok]
+
+        models.append(S_mod)
+        pixels_all.append(pixel_ok)
+        specs_all.append(spec_ok)
+        flags_all.append(flag_obs)
+        sigs_all.append(sig_ok)
+        parguess_waves.append(r['_parguess_wave'])
+        npix.append(len(pixel_ok))
+
+    # pre-clip (kapsig[0])
+    if kapsig[0]:
+        for i, (o, r) in enumerate(zip(orders, order_results)):
+            try:
+                pixel = r['_pixel']
+                spec_obs = r['_spec_obs']
+                smod = models[i](pixel, **_order_par(par, o))
+                resid = spec_obs - smod
+                resid[flags_all[i] != 0] = np.nan
+                flags_all[i][abs(resid) >= (kapsig[0] * np.nanstd(resid))] |= 64
+            except Exception:
+                pass
+
+        # rebuild ok arrays after clipping
+        for i, (o, r) in enumerate(zip(orders, order_results)):
+            pixel = r['_pixel']
+            spec_obs = r['_spec_obs']
+            sig = r['_err_obs'].copy() if wgt == 'error' else np.ones_like(spec_obs)
+            i_ok = np.where(flags_all[i] == 0)[0]
+            pixels_all[i] = pixel[i_ok]
+            specs_all[i] = spec_obs[i_ok]
+            sigs_all[i] = sig[i_ok]
+            npix[i] = len(i_ok)
+
+    # reset wave guesses
+    for i, o in enumerate(orders):
+        par[f'wave_o{o}'] = list(parguess_waves[i])
+
+    # main fit
+    fit_ok, par_fit = _fit_multi(par, orders, models, pixels_all, specs_all,
+                                 sigs_all, npix)
+    if not fit_ok:
+        return {'error': f'Multi-order fit failed: {par_fit}', 'converged': False}
+
+    # post-clip and refit
+    if kapsig[-1]:
+        par3 = Params(par)
+        clipped = False
+        for i, (o, r) in enumerate(zip(orders, order_results)):
+            try:
+                pixel = r['_pixel']
+                spec_obs = r['_spec_obs']
+                opar = _order_par(par_fit, o)
+                smod = models[i](pixel, **opar)
+                resid = spec_obs - smod
+                resid[flags_all[i] != 0] = np.nan
+                nr1 = np.count_nonzero(flags_all[i])
+                flags_all[i][abs(resid) >= (kapsig[-1] * np.nanstd(resid))] |= 64
+                if np.count_nonzero(flags_all[i]) != nr1:
+                    clipped = True
+            except Exception:
+                pass
+
+        if clipped:
+            for i, (o, r) in enumerate(zip(orders, order_results)):
+                pixel = r['_pixel']
+                spec_obs = r['_spec_obs']
+                sig = r['_err_obs'].copy() if wgt == 'error' else np.ones_like(spec_obs)
+                i_ok = np.where(flags_all[i] == 0)[0]
+                pixels_all[i] = pixel[i_ok]
+                specs_all[i] = spec_obs[i_ok]
+                sigs_all[i] = sig[i_ok]
+                npix[i] = len(i_ok)
+
+            for i, o in enumerate(orders):
+                par3[f'wave_o{o}'] = list(parguess_waves[i])
+
+            ok2, par_fit2 = _fit_multi(par3, orders, models, pixels_all, specs_all,
+                                       sigs_all, npix)
+            if ok2:
+                par_fit = par_fit2
+
+    # compute final results per order
+    rvo = 1000 * float(par_fit.rv)
+    e_rvo = 1000 * float(par_fit.rv.unc if par_fit.rv.unc is not None else 0)
+
+    per_order = {}
+    prms_all = []
+    for i, (o, r) in enumerate(zip(orders, order_results)):
+        pixel = r['_pixel']
+        wave_obs = r['_wave_obs']
+        spec_obs = r['_spec_obs']
+        i_ok = np.where(flags_all[i] == 0)[0]
+        pixel_ok = pixel[i_ok]
+        wave_ok = wave_obs[i_ok]
+        spec_ok = spec_obs[i_ok]
+
+        fmod = models[i](pixel_ok, **_order_par(par_fit, o))
+        res = spec_ok - fmod
+        prms = np.nanstd(res) / np.nanmean(fmod) * 100
+        prms_all.append(float(prms))
+
+        per_order[str(o)] = {
+            'pixel_ok': _safe_list(pixel_ok),
+            'wave_ok': _safe_list(wave_ok),
+            'spec_ok': _safe_list(spec_ok),
+            'model_flux': _safe_list(fmod),
+            'residuals': _safe_list(res),
+            'flag': flags_all[i].tolist(),
+            'prms': _sanitize(float(prms)),
+        }
+
+    # parameter summary
+    par_summary = {}
+    for k, v in par_fit.flat().items():
+        key_str = str(k)
+        par_summary[key_str] = {
+            'value': _sanitize(float(v.value)),
+            'unc': _sanitize(float(v.unc)) if v.unc is not None else None,
+        }
+
+    IP_func = models[0].IP
+    ip_shape = IP_func(models[0].vk, *par_fit[f'ip_o{orders[0]}'])
+
+    return {
+        'converged': True,
+        'rv': _sanitize(rvo),
+        'e_rv': _sanitize(e_rvo),
+        'prms_all': [_sanitize(p) for p in prms_all],
+        'prms': _sanitize(float(np.mean(prms_all))),
+        'orders': orders,
+        'per_order': per_order,
+        'ip_vk': _safe_list(models[0].vk),
+        'ip_shape': _safe_list(ip_shape),
+        'params': par_summary,
+        'berv': setup_result['berv'],
+        'dateobs': setup_result['dateobs'],
+    }
