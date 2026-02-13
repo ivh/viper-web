@@ -7,6 +7,22 @@ from astropy.io import fits
 from astropy.time import Time
 
 
+def _get_drs_columns(hdu, detector):
+    '''Get sorted DRS order numbers and their column prefixes from a detector extension.'''
+    cols = hdu[detector].columns.names
+    spec_cols = [col for col in cols if col.endswith('_SPEC')]
+    # extract unique (order_drs, trace) pairs
+    prefixes = {}
+    for col in spec_cols:
+        parts = col.split('_')
+        odrs = int(parts[0])
+        trace = parts[1]
+        if odrs not in prefixes:
+            prefixes[odrs] = f'{parts[0]}_{trace}'
+    # sort descending so index 0 = highest DRS order = lowest VIPER order_idx
+    return sorted(prefixes.items(), reverse=True)
+
+
 def read_spectrum(filename, order):
     '''
     Read a CRIRES observation spectrum.
@@ -39,15 +55,12 @@ def read_spectrum(filename, order):
 
     berv = hdr.get('ESO QC BERV', 0.0)
 
-    n_orders = max(
-        int(c) for c in
-        [col.split('_')[0] for col in hdu[detector].columns.names if col.endswith('_SPEC')]
-    )
-    order_drs = n_orders - order_idx
+    drs_cols = _get_drs_columns(hdu, detector)
+    prefix = drs_cols[order_idx][1]
 
-    spec = hdu[detector].data["0" + str(order_drs) + "_01_SPEC"].copy()
-    err = hdu[detector].data["0" + str(order_drs) + "_01_ERR"].copy()
-    wave = hdu[detector].data["0" + str(order_drs) + "_01_WL"].copy() * 10  # nm -> Angstrom
+    spec = hdu[detector].data[f"{prefix}_SPEC"].copy()
+    err = hdu[detector].data[f"{prefix}_ERR"].copy()
+    wave = hdu[detector].data[f"{prefix}_WL"].copy() * 10  # nm -> Angstrom
 
     pixel = np.arange(spec.size)
     flag_pixel = 1 * np.isnan(spec)
@@ -76,18 +89,13 @@ def read_template(filename, order):
     detector += 1
 
     hdu = fits.open(filename, ignore_blank=True)
-    hdr = hdu[0].header
 
-    n_orders = max(
-        int(c) for c in
-        [col.split('_')[0] for col in hdu[detector].columns.names if col.endswith('_SPEC')]
-    )
-    order_drs = n_orders - order_idx
+    drs_cols = _get_drs_columns(hdu, detector)
+    prefix = drs_cols[order_idx][1]
 
-    spec = hdu[detector].data["0" + str(order_drs) + "_01_SPEC"].copy()
-    wave = hdu[detector].data["0" + str(order_drs) + "_01_WL"].copy()
+    spec = hdu[detector].data[f"{prefix}_SPEC"].copy()
+    wave = hdu[detector].data[f"{prefix}_WL"].copy()
 
-    # if it's a regular observation, wavelengths are in nm -> convert
     if not filename.endswith('_tpl.fits'):
         wave = wave * 10  # nm -> Angstrom
 
@@ -121,11 +129,9 @@ def scan_fits_header(filename):
     available_orders = []
     for det in (1, 2, 3):
         try:
-            cols = hdu[det].columns.names
-            spec_cols = [col for col in cols if col.endswith('_SPEC')]
-            n_orders_det = max(int(col.split('_')[0]) for col in spec_cols)
-            for odrs in range(1, n_orders_det + 1):
-                order = (n_orders_det - odrs) * 3 + det
+            drs_cols = _get_drs_columns(hdu, det)
+            for idx in range(len(drs_cols)):
+                order = idx * 3 + det
                 available_orders.append(order)
         except:
             pass
