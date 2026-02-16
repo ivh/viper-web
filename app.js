@@ -1,12 +1,12 @@
 // VIPER-Web: app.js
-// Pyodide init, file handling, Plotly rendering
+// Worker communication, file handling, Plotly rendering
 
-let pyodide = null;
 let obsLoaded = false;
 let tplLoaded = false;
-let setupResult = null;  // Python dict proxy from setup_model
-let xAxis = 'wave';      // 'pixel' or 'wave'
-let fitMode = 'single';  // 'single' or 'multi'
+let setupResult = null;
+let lastFitData = null;
+let xAxis = 'wave';
+let fitMode = 'single';
 
 const statusBar = document.getElementById('status-bar');
 const logArea = document.getElementById('log-area');
@@ -21,51 +21,47 @@ function setStatus(msg) {
     statusBar.textContent = msg;
 }
 
-// --- Pyodide initialization ---
+// --- Worker communication ---
 
-async function initPyodide() {
-    setStatus('Loading Pyodide...');
-    log('Loading Pyodide runtime...');
+const worker = new Worker('worker.js');
+let callId = 0;
+const pendingCalls = {};
 
-    pyodide = await loadPyodide();
-    log('Pyodide loaded.');
-
-    setStatus('Installing packages (numpy, scipy, astropy)...');
-    log('Installing numpy, scipy, astropy via micropip...');
-    await pyodide.loadPackage('micropip');
-    const micropip = pyodide.pyimport('micropip');
-    await micropip.install(['numpy', 'scipy', 'astropy']);
-    log('Packages installed.');
-
-    // fetch Python source files and write to virtual FS
-    setStatus('Loading Python modules...');
-    const pyFiles = [
-        'airtovac.py', 'param.py', 'wstat.py', 'fts_resample.py',
-        'read_crires.py', 'model.py', 'fitting.py'
-    ];
-
-    for (const fname of pyFiles) {
-        const resp = await fetch(`python/${fname}`);
-        const text = await resp.text();
-        pyodide.FS.writeFile(`/home/pyodide/${fname}`, text);
-        log(`  loaded ${fname}`);
-    }
-
-    // add /home/pyodide to sys.path
-    pyodide.runPython(`
-import sys
-if '/home/pyodide' not in sys.path:
-    sys.path.insert(0, '/home/pyodide')
-`);
-
-    // create atmos directory
-    try { pyodide.FS.mkdir('/home/pyodide/atmos'); } catch(e) {}
-
-    setStatus('Ready. Upload a FITS file to begin.');
-    log('Initialization complete.');
-
-    document.getElementById('btn-load').disabled = false;
+function workerCall(type, data = {}, transfer = []) {
+    return new Promise((resolve, reject) => {
+        const id = callId++;
+        pendingCalls[id] = {resolve, reject};
+        worker.postMessage({type, id, ...data}, transfer);
+    });
 }
+
+worker.onmessage = (e) => {
+    const msg = e.data;
+    switch (msg.type) {
+        case 'done': {
+            const pending = pendingCalls[msg.id];
+            if (pending) {
+                delete pendingCalls[msg.id];
+                pending.resolve(msg.data);
+            }
+            break;
+        }
+        case 'error': {
+            const pending = pendingCalls[msg.id];
+            if (pending) {
+                delete pendingCalls[msg.id];
+                pending.reject(new Error(msg.msg));
+            }
+            break;
+        }
+        case 'log':
+            log(msg.msg);
+            break;
+        case 'status':
+            setStatus(msg.msg);
+            break;
+    }
+};
 
 // --- File handling ---
 
@@ -74,24 +70,17 @@ document.getElementById('obs-file').addEventListener('change', async (e) => {
     if (!file) return;
     log(`Observation file selected: ${file.name}`);
     const buf = await file.arrayBuffer();
-    pyodide.FS.writeFile('/home/pyodide/obs.fits', new Uint8Array(buf));
+    const sizeKB = (buf.byteLength / 1024).toFixed(0);
+    await workerCall('writeFile', {path: '/home/pyodide/obs.fits', data: buf}, [buf]);
     obsLoaded = true;
-    log(`  written to virtual FS (${(buf.byteLength / 1024).toFixed(0)} KB)`);
+    log(`  written to virtual FS (${sizeKB} KB)`);
 
-    // scan header for metadata
     try {
-        const info = pyodide.runPython(`
-import json
-from read_crires import scan_fits_header
-info = scan_fits_header('/home/pyodide/obs.fits')
-json.dumps(info)
-`);
-        const meta = JSON.parse(info);
+        const meta = await workerCall('scanHeader', {path: '/home/pyodide/obs.fits'});
         availableOrders = meta.available_orders;
         log(`  Setting: ${meta.setting}, BERV: ${meta.berv} km/s, Date: ${meta.dateobs}`);
         log(`  Available orders: ${availableOrders.join(', ')}`);
 
-        // auto-populate BERV field
         const bervInput = document.getElementById('berv');
         if (!bervInput.value) {
             bervInput.value = meta.berv.toFixed(3);
@@ -106,83 +95,11 @@ document.getElementById('tpl-file').addEventListener('change', async (e) => {
     if (!file) return;
     log(`Template file selected: ${file.name}`);
     const buf = await file.arrayBuffer();
-    pyodide.FS.writeFile('/home/pyodide/tpl.fits', new Uint8Array(buf));
+    const sizeKB = (buf.byteLength / 1024).toFixed(0);
+    await workerCall('writeFile', {path: '/home/pyodide/tpl.fits', data: buf}, [buf]);
     tplLoaded = true;
-    log(`  written to virtual FS (${(buf.byteLength / 1024).toFixed(0)} KB)`);
+    log(`  written to virtual FS (${sizeKB} KB)`);
 });
-
-
-// --- Atmosphere loading ---
-
-let atmosCache = {};
-
-async function loadAtmosphere(band) {
-    if (atmosCache[band]) {
-        log(`  Atmosphere ${band} already cached.`);
-        return;
-    }
-    log(`  Fetching atmosphere: stdAtmos_${band}.fits ...`);
-    setStatus(`Downloading atmosphere model (${band} band)...`);
-
-    // try Cache API first
-    let cache;
-    try { cache = await caches.open('viper-atmos-v1'); } catch(e) {}
-
-    const localUrl = `atmos/stdAtmos_${band}.fits`;
-    const remoteUrl = `https://raw.githubusercontent.com/mzechmeister/viper/master/lib/atmos/stdAtmos_${band}.fits`;
-    let resp;
-
-    if (cache) {
-        resp = await cache.match(localUrl);
-        if (resp) {
-            log(`  Loaded ${band} from browser cache.`);
-        }
-    }
-
-    if (!resp) {
-        resp = await fetch(localUrl);
-        if (!resp.ok) {
-            log(`  Local not found, fetching from viper repo...`);
-            resp = await fetch(remoteUrl);
-        }
-        if (!resp.ok) {
-            log(`  Warning: failed to fetch atmosphere ${band} (${resp.status})`);
-            return;
-        }
-        if (cache) {
-            try { await cache.put(localUrl, resp.clone()); } catch(e) {}
-        }
-    }
-
-    const buf = await resp.arrayBuffer();
-    const fpath = `/home/pyodide/atmos/stdAtmos_${band}.fits`;
-    pyodide.FS.writeFile(fpath, new Uint8Array(buf));
-    atmosCache[band] = true;
-    log(`  Atmosphere ${band} loaded (${(buf.byteLength / 1024 / 1024).toFixed(1)} MB).`);
-}
-
-function getBandsForWavelength(wmin, wmax) {
-    // Angstrom boundaries for bands
-    const bands_all = ['vis', 'J', 'H', 'K'];
-    const wave_band = [0, 9000, 14000, 18500];
-
-    const w0 = wave_band.map(wb => wmin - wb);
-    const w1 = wave_band.map(wb => wmax - wb);
-
-    // find indices where w >= 0, then argmin
-    const posW0 = w0.map((v, i) => v >= 0 ? [v, i] : null).filter(x => x);
-    const posW1 = w1.map((v, i) => v >= 0 ? [v, i] : null).filter(x => x);
-
-    if (posW0.length === 0 || posW1.length === 0) return ['K'];
-
-    posW0.sort((a, b) => a[0] - b[0]);
-    posW1.sort((a, b) => a[0] - b[0]);
-
-    const iStart = posW0[0][1];
-    const iEnd = posW1[0][1] + 1;
-
-    return bands_all.slice(iStart, iEnd);
-}
 
 // --- Fit mode toggle ---
 
@@ -229,59 +146,12 @@ async function loadSingleOrder() {
     document.getElementById('btn-fit').disabled = true;
 
     try {
-        if (telluric === 'add') {
-            const wrange = pyodide.runPython(`
-import json, numpy as np
-from read_crires import read_spectrum
-_p, _w, _s, _e, _f, _b, _d = read_spectrum('/home/pyodide/obs.fits', ${order})
-json.dumps([float(np.min(_w)), float(np.max(_w))])
-`);
-            const [wmin, wmax] = JSON.parse(wrange);
-            const bands = getBandsForWavelength(wmin, wmax);
-            log(`  Wavelength range: ${wmin.toFixed(0)} - ${wmax.toFixed(0)} A, bands: ${bands.join(', ')}`);
-
-            for (const band of bands) {
-                await loadAtmosphere(band);
-            }
-        }
-
-        const tplArg = tplLoaded ? "'/home/pyodide/tpl.fits'" : 'None';
-        const molArg = molecules.length > 0 ? `[${molecules.map(m => `'${m}'`).join(',')}]` : "['all']";
-        const bervArg = bervVal ? `berv_override=${bervVal}` : '';
-
-        const code = `
-import json, numpy as np
-from fitting import setup_model
-
-result = setup_model(
-    '/home/pyodide/obs.fits',
-    order=${order},
-    tpl_path=${tplArg},
-    molecules=${molArg},
-    telluric='${telluric}',
-    tellshift=${tellshift ? 'True' : 'False'},
-    deg_norm=${degNorm},
-    deg_wave=${degWave},
-    ip_type='${ipType}',
-    ip_hs=${ipHs},
-    rv_guess=${rvGuess},
-    ${bervArg}
-)
-
-_setup_data = {}
-_setup_internal = {}
-for k, v in result.items():
-    if k.startswith('_'):
-        _setup_internal[k] = v
-    else:
-        _setup_data[k] = v
-
-json.dumps(_setup_data)
-`;
-        setStatus('Building model...');
-        const jsonStr = pyodide.runPython(code);
-        const data = JSON.parse(jsonStr);
+        const data = await workerCall('setup', {
+            order, telluric, molecules, tplLoaded, ipType, ipHs,
+            degNorm, degWave, rvGuess, tellshift, bervVal
+        });
         setupResult = data;
+        lastFitData = null;
 
         log(`  BERV: ${data.berv} km/s, Date: ${data.dateobs}`);
         log(`  Good pixels: ${data.pixel_ok.length} / ${data.pixel.length}`);
@@ -328,64 +198,13 @@ async function loadMultiOrder() {
     document.getElementById('btn-fit').disabled = true;
 
     try {
-        // load atmosphere for the full wavelength range
-        if (telluric === 'add') {
-            const wrange = pyodide.runPython(`
-import json, numpy as np
-from read_crires import read_spectrum
-_wmin_all, _wmax_all = [], []
-for _o in ${JSON.stringify(orders)}:
-    _p, _w, _s, _e, _f, _b, _d = read_spectrum('/home/pyodide/obs.fits', _o)
-    _wmin_all.append(float(np.min(_w)))
-    _wmax_all.append(float(np.max(_w)))
-json.dumps([min(_wmin_all), max(_wmax_all)])
-`);
-            const [wmin, wmax] = JSON.parse(wrange);
-            const bands = getBandsForWavelength(wmin, wmax);
-            log(`  Wavelength range: ${wmin.toFixed(0)} - ${wmax.toFixed(0)} A, bands: ${bands.join(', ')}`);
-            for (const band of bands) {
-                await loadAtmosphere(band);
-            }
-        }
-
-        const tplArg = tplLoaded ? "'/home/pyodide/tpl.fits'" : 'None';
-        const molArg = molecules.length > 0 ? `[${molecules.map(m => `'${m}'`).join(',')}]` : "['all']";
-        const bervArg = bervVal ? `berv_override=${bervVal}` : '';
-
-        const code = `
-import json, numpy as np
-from fitting import setup_multi_order
-
-result = setup_multi_order(
-    '/home/pyodide/obs.fits',
-    orders=${JSON.stringify(orders)},
-    tpl_path=${tplArg},
-    molecules=${molArg},
-    telluric='${telluric}',
-    tellshift=${tellshift ? 'True' : 'False'},
-    deg_norm=${degNorm},
-    deg_wave=${degWave},
-    ip_type='${ipType}',
-    ip_hs=${ipHs},
-    rv_guess=${rvGuess},
-    ${bervArg}
-)
-
-_setup_data = {
-    'orders': result['orders'],
-    'per_order': result['per_order'],
-    'berv': result['berv'],
-    'dateobs': result['dateobs'],
-    'ip_vk': result['ip_vk'],
-    'ip_shape': result['ip_shape'],
-}
-json.dumps(_setup_data)
-`;
-        setStatus('Building multi-order model...');
-        const jsonStr = pyodide.runPython(code);
-        const data = JSON.parse(jsonStr);
+        const data = await workerCall('setupMulti', {
+            orders, telluric, molecules, tplLoaded, ipType, ipHs,
+            degNorm, degWave, rvGuess, tellshift, bervVal
+        });
         data._multi = true;
         setupResult = data;
+        lastFitData = null;
 
         const totalPix = Object.values(data.per_order).reduce((s, o) => s + o.pixel_ok.length, 0);
         log(`  BERV: ${data.berv} km/s, Date: ${data.dateobs}`);
@@ -434,25 +253,9 @@ async function fitSingleOrder() {
     const wgt = document.getElementById('wgt').value;
 
     try {
-        const code = `
-import json
-from fitting import fit_order
-
-fit_result = fit_order(
-    result,
-    kapsig=(${kapsig1}, ${kapsig2}),
-    deg_norm=${degNorm},
-    deg_wave=${degWave},
-    ip_type='${ipType}',
-    rv_guess=${rvGuess},
-    tellshift=${tellshift ? 'True' : 'False'},
-    wgt='${wgt}',
-)
-
-json.dumps(fit_result)
-`;
-        const jsonStr = pyodide.runPython(code);
-        const fitData = JSON.parse(jsonStr);
+        const fitData = await workerCall('fit', {
+            ipType, rvGuess, tellshift, kapsig1, kapsig2, degNorm, degWave, wgt
+        });
 
         if (!fitData.converged) {
             log(`Fit failed: ${fitData.error}`);
@@ -461,6 +264,8 @@ json.dumps(fit_result)
             document.getElementById('btn-load').disabled = false;
             return;
         }
+
+        lastFitData = fitData;
 
         const rv = fitData.rv ?? 0;
         const e_rv = fitData.e_rv ?? 0;
@@ -494,8 +299,6 @@ async function fitMultiOrder() {
     setStatus('Fitting (multi-order)...');
     document.getElementById('btn-fit').disabled = true;
     document.getElementById('btn-load').disabled = true;
-    // yield to browser so the info box renders before the blocking fit
-    await new Promise(r => setTimeout(r, 50));
 
     const ipType = document.getElementById('ip-type').value;
     const rvGuess = parseFloat(document.getElementById('rv-guess').value);
@@ -507,25 +310,9 @@ async function fitMultiOrder() {
     const wgt = document.getElementById('wgt').value;
 
     try {
-        const code = `
-import json
-from fitting import fit_multi_order
-
-fit_result = fit_multi_order(
-    result,
-    kapsig=(${kapsig1}, ${kapsig2}),
-    deg_norm=${degNorm},
-    deg_wave=${degWave},
-    ip_type='${ipType}',
-    rv_guess=${rvGuess},
-    tellshift=${tellshift ? 'True' : 'False'},
-    wgt='${wgt}',
-)
-
-json.dumps(fit_result)
-`;
-        const jsonStr = pyodide.runPython(code);
-        const fitData = JSON.parse(jsonStr);
+        const fitData = await workerCall('fitMulti', {
+            ipType, rvGuess, tellshift, kapsig1, kapsig2, degNorm, degWave, wgt
+        });
 
         if (!fitData.converged) {
             log(`Multi-order fit failed: ${fitData.error}`);
@@ -534,6 +321,8 @@ json.dumps(fit_result)
             document.getElementById('btn-load').disabled = false;
             return;
         }
+
+        lastFitData = fitData;
 
         const rv = fitData.rv ?? 0;
         const e_rv = fitData.e_rv ?? 0;
@@ -834,17 +623,10 @@ function toggleXAxis(mode) {
 
     if (setupResult) {
         const plotFn = setupResult._multi ? plotMultiSpectrum : plotSpectrum;
-        try {
-            const hasFit = pyodide.runPython(`'fit_result' in dir() and fit_result.get('converged', False)`);
-            if (hasFit) {
-                const jsonStr = pyodide.runPython('json.dumps(fit_result)');
-                const fitData = JSON.parse(jsonStr);
-                if (setupResult._multi) fitData._multi = true;
-                plotFn(fitData, true);
-            } else {
-                plotFn(setupResult);
-            }
-        } catch(e) {
+        if (lastFitData) {
+            if (setupResult._multi) lastFitData._multi = true;
+            plotFn(lastFitData, true);
+        } else {
             plotFn(setupResult);
         }
     }
@@ -854,37 +636,35 @@ function toggleXAxis(mode) {
 // --- Export ---
 
 document.getElementById('btn-export-json').addEventListener('click', () => {
-    try {
-        const jsonStr = pyodide.runPython('json.dumps(fit_result)');
-        downloadBlob(jsonStr, 'viper_result.json', 'application/json');
-        log('Exported JSON.');
-    } catch(e) {
-        log('Export JSON failed: ' + e.message);
+    if (!lastFitData) {
+        log('No fit data to export.');
+        return;
     }
+    downloadBlob(JSON.stringify(lastFitData), 'viper_result.json', 'application/json');
+    log('Exported JSON.');
 });
 
 document.getElementById('btn-export-csv').addEventListener('click', () => {
-    try {
-        const jsonStr = pyodide.runPython('json.dumps(fit_result)');
-        const data = JSON.parse(jsonStr);
-        let csv = 'order,pixel,wavelength,flux,model,residual\n';
-        if (data.per_order) {
-            for (const o of data.orders) {
-                const od = data.per_order[String(o)];
-                for (let i = 0; i < od.pixel_ok.length; i++) {
-                    csv += `${o},${od.pixel_ok[i]},${od.wave_ok[i]},${od.spec_ok[i]},${od.model_flux[i]},${od.residuals[i]}\n`;
-                }
-            }
-        } else {
-            for (let i = 0; i < data.pixel_ok.length; i++) {
-                csv += `,${data.pixel_ok[i]},${data.wave_ok[i]},${data.spec_ok[i]},${data.model_flux[i]},${data.residuals[i]}\n`;
+    if (!lastFitData) {
+        log('No fit data to export.');
+        return;
+    }
+    const data = lastFitData;
+    let csv = 'order,pixel,wavelength,flux,model,residual\n';
+    if (data.per_order) {
+        for (const o of data.orders) {
+            const od = data.per_order[String(o)];
+            for (let i = 0; i < od.pixel_ok.length; i++) {
+                csv += `${o},${od.pixel_ok[i]},${od.wave_ok[i]},${od.spec_ok[i]},${od.model_flux[i]},${od.residuals[i]}\n`;
             }
         }
-        downloadBlob(csv, 'viper_result.csv', 'text/csv');
-        log('Exported CSV.');
-    } catch(e) {
-        log('Export CSV failed: ' + e.message);
+    } else {
+        for (let i = 0; i < data.pixel_ok.length; i++) {
+            csv += `,${data.pixel_ok[i]},${data.wave_ok[i]},${data.spec_ok[i]},${data.model_flux[i]},${data.residuals[i]}\n`;
+        }
     }
+    downloadBlob(csv, 'viper_result.csv', 'text/csv');
+    log('Exported CSV.');
 });
 
 document.getElementById('btn-export-png').addEventListener('click', () => {
@@ -905,7 +685,9 @@ function downloadBlob(content, filename, type) {
 
 // --- Startup ---
 
-initPyodide().catch(err => {
+workerCall('init').then(() => {
+    document.getElementById('btn-load').disabled = false;
+}).catch(err => {
     setStatus('Failed to initialize Pyodide.');
     log('Initialization error: ' + err.message);
     console.error(err);
