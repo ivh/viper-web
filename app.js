@@ -376,6 +376,17 @@ function getXLabel() {
 
 const axStyle = { gridcolor: '#0f3460', zerolinecolor: '#0f3460' };
 
+function preserveZoom(div, layout) {
+    const cur = div.layout;
+    if (!cur) return layout;
+    for (const ax of ['xaxis', 'yaxis', 'yaxis2']) {
+        if (cur[ax] && cur[ax].autorange === false && cur[ax].range) {
+            layout[ax] = { ...layout[ax], range: cur[ax].range.slice(), autorange: false };
+        }
+    }
+    return layout;
+}
+
 function plotSpectrum(data, isFit = false) {
     const div = document.getElementById('plot-spectrum');
     const xOk = getXData(data.pixel_ok, data.wave_ok);
@@ -437,13 +448,13 @@ function plotSpectrum(data, isFit = false) {
         });
     }
 
-    const layout = {
+    const layout = preserveZoom(div, {
         ...plotLayout, height: 500,
         title: { text: 'Spectrum + Model', font: { size: 13, color: '#e94560' } },
         xaxis: { ...axStyle, title: getXLabel(), anchor: 'y2' },
         yaxis: { ...axStyle, title: 'Flux', domain: [0.28, 1] },
         yaxis2: { ...axStyle, title: 'Residual', domain: [0, 0.22] },
-    };
+    });
 
     Plotly.react(div, traces, layout, { responsive: true });
 }
@@ -526,13 +537,13 @@ function plotMultiSpectrum(data, isFit = false) {
         });
     }
 
-    const layout = {
+    const layout = preserveZoom(div, {
         ...plotLayout, height: 900,
         title: { text: `Spectrum + Model (${orders.length} orders)`, font: { size: 13, color: '#e94560' } },
         xaxis: { ...axStyle, title: getXLabel(), anchor: 'y2' },
         yaxis: { ...axStyle, title: 'Flux', domain: [0.28, 1] },
         yaxis2: { ...axStyle, title: 'Residual', domain: [0, 0.22] },
-    };
+    });
     Plotly.react(div, traces, layout, { responsive: true });
 }
 
