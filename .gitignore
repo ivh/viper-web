@@ -2,3 +2,5 @@
 __pycache__
 *.pyc
 atmos/*.fits
+molecfit/*
+!molecfit/make_stdatmos.py

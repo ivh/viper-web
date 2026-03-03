@@ -318,8 +318,8 @@ def _load_atmosphere(lnwave_j, lmin, lmax, wave_obs, atmos_dir,
     '''
     Load atmosphere FITS files and extract molecular spectra for the wavelength range.
     '''
-    bands_all = ['vis', 'J', 'H', 'K']
-    wave_band = np.array([0, 9000, 14000, 18500])
+    bands_all = ['vis', 'J', 'H', 'K', 'L', 'M']
+    wave_band = np.array([0, 9000, 14000, 18500, 25000, 42000])
 
     obs_lmin = min(wave_obs[0], wave_obs[-1])
     obs_lmax = max(wave_obs[0], wave_obs[-1])
@@ -331,7 +331,7 @@ def _load_atmosphere(lnwave_j, lmin, lmax, wave_obs, atmos_dir,
     bands = bands_all[idx_start:idx_end]
 
     if not bands:
-        bands = ['K']
+        bands = ['M']
 
     from collections import defaultdict
     specs_molec_all = defaultdict(list)

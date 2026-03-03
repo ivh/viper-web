@@ -26,7 +26,15 @@ async function loadAtmosphere(band) {
     try { cache = await caches.open('viper-atmos-v1'); } catch(e) {}
 
     const localUrl = `atmos/stdAtmos_${band}.fits`;
-    const remoteUrl = `https://raw.githubusercontent.com/mzechmeister/viper/master/lib/atmos/stdAtmos_${band}.fits`;
+    const remoteUrls = {
+        vis: `https://raw.githubusercontent.com/mzechmeister/viper/master/lib/atmos/stdAtmos_vis.fits`,
+        J: `https://raw.githubusercontent.com/mzechmeister/viper/master/lib/atmos/stdAtmos_J.fits`,
+        H: `https://raw.githubusercontent.com/mzechmeister/viper/master/lib/atmos/stdAtmos_H.fits`,
+        K: `https://raw.githubusercontent.com/mzechmeister/viper/master/lib/atmos/stdAtmos_K.fits`,
+        L: `https://neon.physics.uu.se/crires/stdAtmos_L.fits`,
+        M: `https://neon.physics.uu.se/crires/stdAtmos_M.fits`,
+    };
+    const remoteUrl = remoteUrls[band];
     let resp;
 
     if (cache) {
@@ -39,7 +47,7 @@ async function loadAtmosphere(band) {
     if (!resp) {
         resp = await fetch(localUrl);
         if (!resp.ok) {
-            sendLog(`  Local not found, fetching from viper repo...`);
+            sendLog(`  Local not found, fetching remote...`);
             resp = await fetch(remoteUrl);
         }
         if (!resp.ok) {
@@ -58,8 +66,8 @@ async function loadAtmosphere(band) {
 }
 
 function getBandsForWavelength(wmin, wmax) {
-    const bands_all = ['vis', 'J', 'H', 'K'];
-    const wave_band = [0, 9000, 14000, 18500];
+    const bands_all = ['vis', 'J', 'H', 'K', 'L', 'M'];
+    const wave_band = [0, 9000, 14000, 18500, 25000, 42000];
 
     const w0 = wave_band.map(wb => wmin - wb);
     const w1 = wave_band.map(wb => wmax - wb);
@@ -67,7 +75,7 @@ function getBandsForWavelength(wmin, wmax) {
     const posW0 = w0.map((v, i) => v >= 0 ? [v, i] : null).filter(x => x);
     const posW1 = w1.map((v, i) => v >= 0 ? [v, i] : null).filter(x => x);
 
-    if (posW0.length === 0 || posW1.length === 0) return ['K'];
+    if (posW0.length === 0 || posW1.length === 0) return ['M'];
 
     posW0.sort((a, b) => a[0] - b[0]);
     posW1.sort((a, b) => a[0] - b[0]);

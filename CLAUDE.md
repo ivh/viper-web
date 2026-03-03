@@ -40,8 +40,9 @@ They communicate via JSON strings through `pyodide.runPython()`.
   FITS header instead. Falls back to 0.0 if missing; user can override in the UI.
 - **Nocell mode only**: The fake cell (`make_fake_cell()`) creates a flat unity
   spectrum. This replicates `viper.py` lines 789-794 when `ftsname=='None'`.
-- **Atmosphere lazy-loading**: FITS files (7-17 MB each) are fetched on demand
+- **Atmosphere lazy-loading**: FITS files (7-41 MB each) are fetched on demand
   based on the observation wavelength range, then cached via the browser Cache API.
+  Bands vis/J/H/K are fetched from the viper GitHub repo; L/M from neon.physics.uu.se.
 - **IP_sbg bug**: The original `IP_sbg` function references undefined variables
   `mu`, `s`, `a`. Fixed to use `s1` and `0` respectively.
 - **`c` units**: `model.py` uses `c = 299792.458` km/s. `fts_resample.py` uses
@@ -64,10 +65,10 @@ uv run serve.py
 ```
 
 Then open http://localhost:8000 and upload a CRIRES FITS file from
-`/Users/tom/vipere.git/data/WASP18/cr2res_WASP18.fits`. Orders 1-27 are
+`/Users/tom/viper.git/data/WASP18/cr2res_WASP18.fits`. Orders 1-27 are
 available in that file (Y1029 setting).
 
-The `atmos/` directory contains symlinks to `/Users/tom/vipere.git/lib/atmos/`.
+The `atmos/` directory contains symlinks to `/Users/tom/viper.git/lib/atmos/`.
 These are gitignored; for deployment, the browser fetches them from the served
 `atmos/` path.
 
@@ -88,7 +89,7 @@ print(fit['rv'], fit['e_rv'])
 
 - Multi-order fitting (loop orders, combine RVs)
 - Web Worker for non-blocking fit (UI freezes during curve_fit)
-- Additional instruments (only CRIRES reader exists)
+- Additional instruments (only CRIRES reader exists, but L/M band atmosphere now available)
 - Template creation from observations
 - Iodine cell mode
 - Rational polynomial normalization (`pade()` exists but no UI toggle)
@@ -100,7 +101,6 @@ print(fit['rv'], fit['e_rv'])
   so BERV defaults to 0. The original VIPER computes it from coordinates.
 - When no template is provided, RV is fixed (uncertainty = 0). This is correct
   behavior -- you need stellar lines to measure a velocity.
-- The `atmos/*.fits` files are NOT in the git repo (gitignored). For the GitHub
-  Pages deployment, they need to be served somehow -- currently the browser
-  fetches from `atmos/` relative path, which works locally but not on Pages
-  unless the files are committed or hosted elsewhere.
+- The `atmos/*.fits` files are NOT in the git repo (gitignored). The browser
+  fetches from `atmos/` locally, falling back to GitHub (vis/J/H/K) or
+  neon.physics.uu.se (L/M) for remote deployment.
