@@ -1,5 +1,6 @@
 // worker.js - Pyodide Web Worker for VIPER-Web
-importScripts('https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js');
+// Pyodide >=314 ships only an ESM build, so this must be a module worker.
+import { loadPyodide } from 'https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.mjs';
 
 let pyodide = null;
 let atmosCache = {};

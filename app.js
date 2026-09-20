@@ -23,7 +23,7 @@ function setStatus(msg) {
 
 // --- Worker communication ---
 
-const worker = new Worker('worker.js');
+const worker = new Worker('worker.js', { type: 'module' });
 let callId = 0;
 const pendingCalls = {};
 
