@@ -15,7 +15,7 @@ accessible through a browser UI.
 ## What it does
 
 - Upload a CRIRES FITS observation (and optionally a stellar template)
-- Select an order (1-28) and configure the forward model
+- Select an order (1-28), or fit all orders at once with shared atmosphere parameters
 - Fit telluric absorption lines with selectable molecules (H2O, CH4, N2O, CO2, CO, O2)
 - Choose instrumental profile shape (Gaussian, super-Gaussian, asymmetric, bi-Gaussian, etc.)
 - Iterative least-squares fitting with kappa-sigma clipping
@@ -32,8 +32,8 @@ accessible through a browser UI.
 6. Click **Fit** to run the least-squares fit
 7. Results (RV, uncertainties, %rms) appear above the plots
 
-The atmosphere model files (~10-17 MB per band) are fetched on demand and cached
-in the browser for subsequent visits.
+The atmosphere model files are fetched on demand and cached in the browser for
+subsequent visits: 7-16 MB for vis/J/H/K, 30-39 MB for the L and M bands.
 
 ## Local development
 
@@ -50,7 +50,8 @@ FITS files from the VIPER repository (`lib/atmos/stdAtmos_*.fits`).
 
 ```
 index.html          UI (single page, dark theme)
-app.js              Pyodide init, file handling, Plotly rendering
+app.js              UI, file handling, Plotly rendering (main thread)
+worker.js           Web Worker: Pyodide init, packages, runs the fit
 serve.py            Local dev server
 python/
   fitting.py        Main entry: setup_model(), fit_order()

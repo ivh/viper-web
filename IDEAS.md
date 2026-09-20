@@ -1,14 +1,8 @@
 # Ideas
 
-## Global telluric fit across all orders
+## Global telluric fit across all orders -- DONE (aa8a290, 2026-02-13)
 
-Original VIPER fits each order independently, so each gets its own atmosphere
-scaling coefficients. But it's the same atmosphere — a global fit would be
-physically more correct and better constrained.
-
-Approach: set up each order's model independently (wavelength, normalization,
-IP), concatenate good pixels from all orders into one big vector, build a
-combined model function that shares the atmosphere coefficients but uses
-per-order `norm`, `wave`, `ip` parameters. One `curve_fit` call on the whole
-thing. The `Params` nested dict already supports this with keys like
-`norm_o10`, `wave_o10`, etc.
+Implemented as `setup_multi_order()` / `fit_multi_order()` in `python/fitting.py`,
+exposed in the UI as the "All orders" fit mode. Shares `rv` and `atm` across
+orders, keeps `norm`, `wave`, `ip` per order, one `curve_fit` on the
+concatenated pixel vector.

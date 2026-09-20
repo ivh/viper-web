@@ -1,5 +1,5 @@
 // worker.js - Pyodide Web Worker for VIPER-Web
-importScripts('https://cdn.jsdelivr.net/pyodide/v0.29.3/full/pyodide.js');
+importScripts('https://cdn.jsdelivr.net/pyodide/v314.0.7/full/pyodide.js');
 
 let pyodide = null;
 let atmosCache = {};

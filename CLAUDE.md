@@ -9,10 +9,12 @@ template creation, no iodine cell mode).
 
 ## Architecture
 
-**Two-layer design**: Python does all the math, JavaScript handles UI/files/plots.
-They communicate via JSON strings through `pyodide.runPython()`.
+**Three-layer design**: Python does all the math, `worker.js` owns Pyodide and
+runs it off the main thread, `app.js` handles UI/files/plots and talks to the
+worker by `postMessage`. Python and JS communicate via JSON strings through
+`pyodide.runPython()` inside the worker.
 
-- `app.js` calls `setup_model()` which returns a dict. The dict contains both
+- `worker.js` calls `setup_model()` (or `setup_multi_order()`) which returns a dict. The dict contains both
   JSON-serializable data (for plotting) and internal Python objects (prefixed
   with `_`, for use by `fit_order()`). The JS side only sees the JSON portion.
 - The Python `result` variable persists in Pyodide's global scope between
@@ -56,7 +58,7 @@ They communicate via JSON strings through `pyodide.runPython()`.
 - Atmosphere FITS files go to `/home/pyodide/atmos/`.
 - Uploaded FITS files go to `/home/pyodide/obs.fits` and `/home/pyodide/tpl.fits`.
 - Packages installed via micropip: numpy, scipy, astropy.
-- Pyodide version: 0.29.3 from jsDelivr CDN.
+- Pyodide version: 314.0.7 from jsDelivr CDN (Python 3.14, numpy 2.4.6, scipy 1.18.0, astropy 7.2.0). Pinned in `worker.js:2`; Pyodide switched from 0.x to CPython-tracking version numbers.
 
 ## Testing locally
 
@@ -87,8 +89,6 @@ print(fit['rv'], fit['e_rv'])
 
 ## What's not implemented (future phases from original plan)
 
-- Multi-order fitting (loop orders, combine RVs)
-- Web Worker for non-blocking fit (UI freezes during curve_fit)
 - Additional instruments (only CRIRES reader exists, but L/M band atmosphere now available)
 - Template creation from observations
 - Iodine cell mode

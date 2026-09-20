@@ -451,9 +451,9 @@ function plotSpectrum(data, isFit = false) {
     const layout = preserveZoom(div, {
         ...plotLayout, height: 500,
         title: { text: 'Spectrum + Model', font: { size: 13, color: '#e94560' } },
-        xaxis: { ...axStyle, title: getXLabel(), anchor: 'y2' },
-        yaxis: { ...axStyle, title: 'Flux', domain: [0.28, 1] },
-        yaxis2: { ...axStyle, title: 'Residual', domain: [0, 0.22] },
+        xaxis: { ...axStyle, title: { text: getXLabel() }, anchor: 'y2' },
+        yaxis: { ...axStyle, title: { text: 'Flux' }, domain: [0.28, 1] },
+        yaxis2: { ...axStyle, title: { text: 'Residual' }, domain: [0, 0.22] },
     });
 
     Plotly.react(div, traces, layout, { responsive: true });
@@ -480,8 +480,8 @@ function plotIP(data) {
         ...plotLayout,
         height: 200,
         title: { text: 'Instrumental Profile', font: { size: 13, color: '#e94560' } },
-        xaxis: { ...plotLayout.xaxis, title: 'Velocity [km/s]' },
-        yaxis: { ...plotLayout.yaxis, title: 'Contribution' },
+        xaxis: { ...plotLayout.xaxis, title: { text: 'Velocity [km/s]' } },
+        yaxis: { ...plotLayout.yaxis, title: { text: 'Contribution' } },
     };
 
     Plotly.react(div, traces, layout, { responsive: true });
@@ -540,9 +540,9 @@ function plotMultiSpectrum(data, isFit = false) {
     const layout = preserveZoom(div, {
         ...plotLayout, height: 900,
         title: { text: `Spectrum + Model (${orders.length} orders)`, font: { size: 13, color: '#e94560' } },
-        xaxis: { ...axStyle, title: getXLabel(), anchor: 'y2' },
-        yaxis: { ...axStyle, title: 'Flux', domain: [0.28, 1] },
-        yaxis2: { ...axStyle, title: 'Residual', domain: [0, 0.22] },
+        xaxis: { ...axStyle, title: { text: getXLabel() }, anchor: 'y2' },
+        yaxis: { ...axStyle, title: { text: 'Flux' }, domain: [0.28, 1] },
+        yaxis2: { ...axStyle, title: { text: 'Residual' }, domain: [0, 0.22] },
     });
     Plotly.react(div, traces, layout, { responsive: true });
 }
